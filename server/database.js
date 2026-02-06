@@ -17,6 +17,8 @@ const pool = new Pool(connectionConfig);
 // Initialize DB
 const initDB = async () => {
   try {
+    await pool.query('SELECT NOW()'); // Simple connection test
+    
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -48,7 +50,7 @@ const initDB = async () => {
 
     console.log("Database tables initialized and migrated");
   } catch (err) {
-    console.error('Error creating tables:', err);
+    console.error('CRITICAL: Database initialization failed:', err);
   }
 };
 
@@ -217,6 +219,7 @@ function getRecentChats(currentUserId) {
 }
 
 module.exports = { 
+    pool, // Export pool for health check
     createUser, 
     findUser,
     updateUserAvatar, 

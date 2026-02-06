@@ -6,6 +6,7 @@ const { Server } = require("socket.io");
 const cors = require('cors');
 const path = require('path');
 const { 
+  pool,
   createUser, 
   findUser, 
   updateUserAvatar,
@@ -23,6 +24,17 @@ app.use(cors());
 // Increase limit for base64 file uploads
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Health check endpoint
+app.get('/health', async (req, res) => {
+    try {
+        await pool.query('SELECT 1');
+        res.json({ status: 'ok', db: 'connected' });
+    } catch (e) {
+        console.error("Health check failed:", e);
+        res.status(500).json({ status: 'error', db: 'disconnected', error: e.message });
+    }
+});
 
 const io = new Server(server, {
   cors: {
