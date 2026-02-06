@@ -128,13 +128,18 @@ function App() {
 
   // Init Socket
   useEffect(() => {
-      // Reverting strict websocket force to see if it helps with "Server not found" on some networks
-      // but keeping it as a preference for better performance
+      const savedUser = localStorage.getItem('messenger_user');
+      const savedPass = localStorage.getItem('messenger_pass');
+
       const newSocket = io({
           transports: ['websocket', 'polling'], 
           reconnection: true,
           reconnectionAttempts: 10,
           reconnectionDelay: 1000,
+          auth: {
+              username: savedUser,
+              password: savedPass
+          }
       });
       
       // Define listeners immediately to avoid race conditions
@@ -169,9 +174,14 @@ function App() {
       setIsLoggedIn(true);
       setMe(userData); 
       localStorage.setItem('messenger_user', userData.username);
-      localStorage.setItem('messenger_me', JSON.stringify(userData)); // Save full user data
+      localStorage.setItem('messenger_me', JSON.stringify(userData)); 
       if (password) localStorage.setItem('messenger_pass', password);
       setAuthError("");
+      
+      // Update socket auth for future reconnections
+      if (socket) {
+          socket.auth = { username: userData.username, password: password || localStorage.getItem('messenger_pass') };
+      }
     };
 
     const onLoginError = (msg) => {

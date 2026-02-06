@@ -49,9 +49,46 @@ const io = new Server(server, {
 let connectedUsers = {}; // socketId -> info
 let userSockets = {};    // userId -> socketId (only one socket per user for simplicity, or last active)
 
+// Authentication Middleware
+io.use(async (socket, next) => {
+    const { username, password } = socket.handshake.auth;
+    
+    if (username && password) {
+        try {
+            const user = await findUser(username);
+            if (user && verifyPassword(user, password)) {
+                // Attach user to socket for connection handler
+                socket.user = { id: user.id, username, avatar_url: user.avatar_url };
+                return next();
+            }
+        } catch (e) {
+            console.error("Auth middleware error:", e);
+        }
+    }
+    // Continue even if auth fails (guest/login mode)
+    next();
+});
+
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
   socket.emit("me", socket.id);
+
+  // Auto-login from handshake
+  if (socket.user) {
+      const user = socket.user;
+      connectedUsers[socket.id] = { socketId: socket.id, userId: user.id, username: user.username };
+      userSockets[user.id] = socket.id;
+
+      socket.emit('login_success', { id: user.id, username: user.username, avatar_url: user.avatar_url });
+      console.log(`User auto-logged in: ${user.username} (ID: ${user.id})`);
+      
+      io.emit('user_status', { userId: user.id, status: 'online' });
+      
+      getRecentChats(user.id).then(chats => socket.emit('recent_chats', chats));
+      
+      const onlineIds = Object.values(connectedUsers).map(u => u.userId);
+      socket.emit('online_users', onlineIds);
+  }
 
   // REGISTER
   socket.on('register', async ({ username, password }) => {
