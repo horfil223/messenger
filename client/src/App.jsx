@@ -132,7 +132,7 @@ function App() {
       const savedPass = localStorage.getItem('messenger_pass');
 
       const newSocket = io({
-          transports: ['websocket', 'polling'], 
+          transports: ['websocket'], // Force WebSocket as requested to fix session stability issues
           reconnection: true,
           reconnectionAttempts: 10,
           reconnectionDelay: 1000,
