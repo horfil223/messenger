@@ -28,10 +28,29 @@ function App() {
   const [callEnded, setCallEnded] = useState(false);
   const [callerName, setCallerName] = useState("");
   const [callStatus, setCallStatus] = useState(""); // "Calling...", "Connecting..."
+  const [cameraError, setCameraError] = useState("");
 
   const myVideo = useRef();
   const userVideo = useRef();
   const connectionRef = useRef();
+
+  // Load saved session on mount
+  useEffect(() => {
+    const savedUser = localStorage.getItem('messenger_user');
+    const savedPass = localStorage.getItem('messenger_pass');
+    if (savedUser && savedPass) {
+      setUsername(savedUser);
+      setPassword(savedPass);
+      // We need to wait for socket connection before emitting login
+      if (socket.connected) {
+         socket.emit('login', { username: savedUser, password: savedPass });
+      } else {
+         socket.once('connect', () => {
+             socket.emit('login', { username: savedUser, password: savedPass });
+         });
+      }
+    }
+  }, []);
 
   useEffect(() => {
     socket.on('connect', () => setIsConnected(true));
@@ -59,12 +78,25 @@ function App() {
       setIsRegistering(false);
     });
     socket.on('register_error', (msg) => setAuthError(msg));
+    
     socket.on('login_success', (user) => {
       setAuthError("");
       setIsLoggedIn(true);
+      // Save session
+      localStorage.setItem('messenger_user', username);
+      localStorage.setItem('messenger_pass', password); // In real app, use token
+      
       startCamera(); // Try to start camera on login
     });
-    socket.on('login_error', (msg) => setAuthError(msg));
+    
+    socket.on('login_error', (msg) => {
+        setAuthError(msg);
+        // If login failed (e.g. changed password), clear storage
+        if (msg === "Invalid credentials") {
+             localStorage.removeItem('messenger_user');
+             localStorage.removeItem('messenger_pass');
+        }
+    });
 
     // WebRTC Events
     socket.on("callUser", (data) => {
@@ -86,7 +118,7 @@ function App() {
       socket.off('login_error');
       socket.off('callUser');
     };
-  }, []);
+  }, [username, password]); // Added deps to access current state if needed
 
   const handleAuth = (e) => {
     e.preventDefault();
@@ -99,7 +131,17 @@ function App() {
     }
   };
 
+  const logout = () => {
+      localStorage.removeItem('messenger_user');
+      localStorage.removeItem('messenger_pass');
+      setIsLoggedIn(false);
+      setUsername("");
+      setPassword("");
+      window.location.reload();
+  };
+
   const startCamera = async () => {
+    setCameraError("");
     try {
       const currentStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setStream(currentStream);
@@ -107,7 +149,14 @@ function App() {
       return currentStream;
     } catch (err) {
       console.error("Camera error:", err);
-      alert("Could not access camera/microphone. Please check permissions.");
+      let msg = "Could not access camera.";
+      if (err.name === 'NotAllowedError') msg = "Camera access denied. Please allow permission in browser settings.";
+      if (err.name === 'NotFoundError') msg = "No camera/mic found.";
+      if (window.location.protocol === 'http:' && window.location.hostname !== 'localhost') {
+          msg = "Camera requires HTTPS connection.";
+      }
+      setCameraError(msg);
+      alert(msg);
       return null;
     }
   };
@@ -131,7 +180,10 @@ function App() {
     if (!currentStream) {
       currentStream = await startCamera();
     }
-    if (!currentStream) return; // Failed to get camera
+    if (!currentStream) {
+        setCallStatus("Camera Error");
+        return; 
+    }
 
     setCallStatus("Calling...");
     
@@ -169,14 +221,20 @@ function App() {
     connectionRef.current = peer;
   };
 
-  const answerCall = () => {
+  const answerCall = async () => {
     setCallAccepted(true);
     setCallStatus("Connecting...");
+    
+    // Ensure we have stream before answering
+    let currentStream = stream;
+    if (!currentStream) {
+        currentStream = await startCamera();
+    }
     
     const peer = new SimplePeer({
       initiator: false,
       trickle: false,
-      stream: stream
+      stream: currentStream // Can be null, audio-only call logic might be needed later
     });
 
     peer.on("signal", (data) => {
@@ -236,10 +294,26 @@ function App() {
   return (
     <div className="flex h-screen bg-gray-100 overflow-hidden">
       <div className="w-1/4 bg-white border-r flex flex-col">
-        <div className="p-4 bg-blue-600 text-white shadow">
-          <h2 className="font-bold text-lg">Chats</h2>
-          <div className="text-xs opacity-80">{username}</div>
+        <div className="p-4 bg-blue-600 text-white shadow flex justify-between items-center">
+          <div>
+              <h2 className="font-bold text-lg">Chats</h2>
+              <div className="text-xs opacity-80">{username}</div>
+          </div>
+          <button onClick={logout} className="text-xs bg-blue-700 px-2 py-1 rounded hover:bg-blue-800">Logout</button>
         </div>
+        
+        {/* Camera Status / Manual Start */}
+        {!stream && (
+            <div className="p-2 bg-yellow-100 text-yellow-800 text-xs text-center cursor-pointer hover:bg-yellow-200" onClick={startCamera}>
+                ⚠️ Camera off. Click to enable.
+            </div>
+        )}
+        {cameraError && (
+             <div className="p-2 bg-red-100 text-red-800 text-xs text-center">
+                {cameraError}
+            </div>
+        )}
+
         <div className="flex-1 overflow-y-auto">
           {users.length === 0 ? (
             <div className="p-4 text-gray-500 text-center">No one else is online</div>
