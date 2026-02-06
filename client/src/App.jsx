@@ -26,13 +26,23 @@ function App() {
   const [password, setPassword] = useState(localStorage.getItem('messenger_pass') || "");
   const [authError, setAuthError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  // Initial 'me' state from local storage if available (partial data)
+  // Initial 'me' state from local storage if available
   const [me, setMe] = useState(() => {
-      const savedUser = localStorage.getItem('messenger_user');
-      return savedUser ? { username: savedUser } : null;
+      try {
+          const savedMe = localStorage.getItem('messenger_me');
+          return savedMe ? JSON.parse(savedMe) : null;
+      } catch (e) {
+          const savedUser = localStorage.getItem('messenger_user');
+          return savedUser ? { username: savedUser } : null;
+      }
   });
 
-  const [chats, setChats] = useState([]);
+  const [chats, setChats] = useState(() => {
+      try {
+          const savedChats = localStorage.getItem('messenger_chats');
+          return savedChats ? JSON.parse(savedChats) : [];
+      } catch (e) { return []; }
+  });
   const [searchResults, setSearchResults] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedUser, setSelectedUser] = useState(null);
@@ -157,8 +167,9 @@ function App() {
     const onLoginSuccess = (userData) => {
       setIsLoading(false);
       setIsLoggedIn(true);
-      setMe(userData); // Update with full data from server (id, avatar)
+      setMe(userData); 
       localStorage.setItem('messenger_user', userData.username);
+      localStorage.setItem('messenger_me', JSON.stringify(userData)); // Save full user data
       if (password) localStorage.setItem('messenger_pass', password);
       setAuthError("");
     };
@@ -174,6 +185,8 @@ function App() {
              setMe(null);
              localStorage.removeItem('messenger_user');
              localStorage.removeItem('messenger_pass');
+             localStorage.removeItem('messenger_me');
+             localStorage.removeItem('messenger_chats');
         } else {
              // For server errors, show error but don't kick out if we are optimistically logged in
              if (!localStorage.getItem('messenger_user')) {
@@ -196,7 +209,10 @@ function App() {
         setAuthError(msg);
     };
 
-    const onRecentChats = (chatList) => setChats(chatList);
+    const onRecentChats = (chatList) => {
+        setChats(chatList);
+        localStorage.setItem('messenger_chats', JSON.stringify(chatList));
+    };
     const onSearchResults = (results) => setSearchResults(results);
     const onOnlineUsers = (ids) => setOnlineUsers(new Set(ids));
     
@@ -210,7 +226,11 @@ function App() {
     };
 
     const onAvatarUpdated = ({ avatarUrl }) => {
-        setMe(prev => ({ ...prev, avatar_url: avatarUrl }));
+        setMe(prev => {
+            const newState = { ...prev, avatar_url: avatarUrl };
+            localStorage.setItem('messenger_me', JSON.stringify(newState));
+            return newState;
+        });
     };
 
     const onHistory = ({ userId, messages: history }) => {
