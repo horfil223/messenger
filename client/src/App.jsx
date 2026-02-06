@@ -114,286 +114,240 @@ function App() {
   // Safety timeout for auto-login - REMOVED
   // We use optimistic login now.
 
-  // Retry login whenever connected to sync/validate session
-  useEffect(() => {
-      if (socket && isConnected) {
-          const savedUser = localStorage.getItem('messenger_user');
-          const savedPass = localStorage.getItem('messenger_pass');
-          if (savedUser && savedPass) {
-              console.log("Syncing session...");
-              socket.emit('login', { username: savedUser, password: savedPass });
-          }
-      }
-  }, [socket, isConnected]);
-
-  // Init Socket
+  // Init Socket & Listeners (Merged to fix race conditions)
   useEffect(() => {
       const savedUser = localStorage.getItem('messenger_user');
       const savedPass = localStorage.getItem('messenger_pass');
 
+      // Create socket with autoConnect: false to attach listeners before connection
       const newSocket = io({
-          transports: ['websocket'], // Force WebSocket as requested to fix session stability issues
+          transports: ['websocket'], 
           reconnection: true,
           reconnectionAttempts: 10,
           reconnectionDelay: 1000,
+          autoConnect: false, // Critical: wait for listeners
           auth: {
               username: savedUser,
               password: savedPass
           }
       });
+
+      // --- EVENT HANDLERS ---
       
-      // Define listeners immediately to avoid race conditions
-      newSocket.on('connect', () => {
+      const onConnect = () => {
           console.log("Connected to server");
           setIsConnected(true);
-      });
+      };
 
-      newSocket.on('disconnect', () => {
+      const onDisconnect = () => {
           console.log("Disconnected from server");
           setIsConnected(false);
-      });
+      };
 
-      newSocket.on('connect_error', (err) => {
+      const onConnectError = (err) => {
           console.error("Connection error:", err);
           setIsConnected(false);
           
-          // If the server rejected our auto-login attempt
           if (err.message === "Invalid credentials") {
-              // Clear session and force logout
-              localStorage.removeItem('messenger_user');
-              localStorage.removeItem('messenger_pass');
-              localStorage.removeItem('messenger_me');
-              localStorage.removeItem('messenger_chats');
-              setMe(null);
-              setIsLoggedIn(false);
-              setAuthError("Session expired. Please login again.");
-              
-              // Disconnect socket to prevent retry loop with bad creds
-              newSocket.disconnect();
-              // Re-connect as guest (no auth) so user can see login screen
-              newSocket.auth = {};
-              newSocket.connect();
+               localStorage.removeItem('messenger_user');
+               localStorage.removeItem('messenger_pass');
+               localStorage.removeItem('messenger_me');
+               localStorage.removeItem('messenger_chats');
+               setMe(null);
+               setIsLoggedIn(false);
+               setAuthError("Session expired. Please login again.");
+               newSocket.disconnect();
+               newSocket.auth = {};
+               newSocket.connect();
           }
-      });
+      };
 
+      const onLoginSuccess = (userData) => {
+        setIsLoading(false);
+        setIsLoggedIn(true);
+        setMe(userData); 
+        localStorage.setItem('messenger_user', userData.username);
+        localStorage.setItem('messenger_me', JSON.stringify(userData)); 
+        if (newSocket.auth.password) localStorage.setItem('messenger_pass', newSocket.auth.password);
+        setAuthError("");
+        
+        // Update socket auth for future reconnections
+        newSocket.auth = { username: userData.username, password: newSocket.auth.password || localStorage.getItem('messenger_pass') };
+      };
+  
+      const onLoginError = (msg) => {
+          setIsLoading(false);
+          if (msg === "Invalid credentials") {
+               setAuthError(msg);
+               setIsLoggedIn(false);
+               setMe(null);
+               localStorage.removeItem('messenger_user');
+               localStorage.removeItem('messenger_pass');
+               localStorage.removeItem('messenger_me');
+               localStorage.removeItem('messenger_chats');
+          } else {
+               if (!localStorage.getItem('messenger_user')) {
+                   setAuthError(msg);
+               } else {
+                   console.error("Background sync failed:", msg);
+               }
+          }
+      };
+  
+      const onRegisterSuccess = () => {
+          setIsLoading(false);
+          alert("Registration successful! Login now.");
+          setIsRegistering(false);
+          setAuthError("");
+      };
+      
+      const onRegisterError = (msg) => {
+          setIsLoading(false);
+          setAuthError(msg);
+      };
+  
+      const onRecentChats = (chatList) => {
+          setChats(chatList);
+          localStorage.setItem('messenger_chats', JSON.stringify(chatList));
+      };
+      const onSearchResults = (results) => setSearchResults(results);
+      const onOnlineUsers = (ids) => setOnlineUsers(new Set(ids));
+      
+      const onUserStatus = ({ userId, status }) => {
+          setOnlineUsers(prev => {
+              const newSet = new Set(prev);
+              if (status === 'online') newSet.add(userId);
+              else newSet.delete(userId);
+              return newSet;
+          });
+      };
+  
+      const onAvatarUpdated = ({ avatarUrl }) => {
+          setMe(prev => {
+              const newState = { ...prev, avatar_url: avatarUrl };
+              localStorage.setItem('messenger_me', JSON.stringify(newState));
+              return newState;
+          });
+      };
+  
+      const onHistory = ({ userId, messages: history }) => {
+        setMessages(prev => ({ ...prev, [userId]: history }));
+      };
+  
+      const onPrivateMessage = (msg) => {
+        const { fromUserId, username, content, timestamp, id } = msg;
+        
+        // Use functional state update to access latest state if needed, 
+        // but here we just need to append.
+        setMessages(prev => {
+          const userMsgs = prev[fromUserId] || [];
+          const exists = userMsgs.some(m => (id && m.id === id) || (!id && m.created_at === timestamp && m.content === content));
+          if (exists) return prev;
+          return { ...prev, [fromUserId]: [...userMsgs, msg] };
+        });
+        
+        setChats(prev => {
+          if (!prev.find(c => c.id === fromUserId)) return [{ id: fromUserId, username, avatar_url: msg.avatar_url }, ...prev]; 
+          const otherChats = prev.filter(c => c.id !== fromUserId);
+          const currentChat = prev.find(c => c.id === fromUserId) || { id: fromUserId, username };
+          return [currentChat, ...otherChats];
+        });
+  
+        if (document.hidden || selectedUserRef.current?.id !== fromUserId) {
+            notificationAudio.current.play().catch(e => console.log("Audio play failed", e)); 
+        } else {
+            newSocket.emit('mark_read', { fromUserId });
+        }
+      };
+  
+      const onMessageSent = (msg) => {
+          const { toUserId, timestamp, content, id } = msg;
+          setMessages(prev => {
+              const userMsgs = prev[toUserId] || [];
+              const exists = userMsgs.some(m => (id && m.id === id) || (!id && m.created_at === timestamp && m.content === content));
+              if (exists) return prev;
+              // IMPORTANT: Use meRef to get current user ID for consistent UI
+              return { ...prev, [toUserId]: [...userMsgs, { ...msg, from_user_id: meRef.current?.id }] };
+          });
+      };
+  
+      const onMessagesRead = ({ byUserId }) => {
+          setMessages(prev => {
+              const userMsgs = prev[byUserId];
+              if (!userMsgs) return prev;
+              return {
+                  ...prev,
+                  [byUserId]: userMsgs.map(m => m.from_user_id === meRef.current?.id ? { ...m, is_read: true } : m)
+              };
+          });
+      };
+  
+      const onMessageEdited = ({ messageId, newContent, fromUserId }) => {
+          setMessages(prev => {
+              const newState = { ...prev };
+              Object.keys(newState).forEach(userId => {
+                  newState[userId] = newState[userId].map(m => 
+                      m.id === messageId ? { ...m, content: newContent, is_edited: true } : m
+                  );
+              });
+              return newState;
+          });
+      };
+  
+      const onMessageDeleted = ({ messageId }) => {
+          setMessages(prev => {
+              const newState = { ...prev };
+              Object.keys(newState).forEach(userId => {
+                  newState[userId] = newState[userId].map(m => 
+                      m.id === messageId ? { ...m, is_deleted: true, content: 'Message deleted' } : m
+                  );
+              });
+              return newState;
+          });
+      };
+  
+      const onTyping = ({ fromUserId }) => setTypingUsers(prev => new Set(prev).add(fromUserId));
+      const onStopTyping = ({ fromUserId }) => setTypingUsers(prev => { const s = new Set(prev); s.delete(fromUserId); return s; });
+  
+      const onCallUser = (data) => {
+        setReceivingCall(true);
+        setCaller(data.from);
+        setCallerName(data.name);
+        setCallerSignal(data.signal);
+      };
+  
+      // --- ATTACH LISTENERS ---
+      newSocket.on('connect', onConnect);
+      newSocket.on('disconnect', onDisconnect);
+      newSocket.on('connect_error', onConnectError);
+      newSocket.on('login_success', onLoginSuccess);
+      newSocket.on('login_error', onLoginError);
+      newSocket.on('register_success', onRegisterSuccess);
+      newSocket.on('register_error', onRegisterError);
+      newSocket.on('recent_chats', onRecentChats);
+      newSocket.on('search_results', onSearchResults);
+      newSocket.on('online_users', onOnlineUsers);
+      newSocket.on('user_status', onUserStatus);
+      newSocket.on('avatar_updated', onAvatarUpdated);
+      newSocket.on('history', onHistory);
+      newSocket.on('private message', onPrivateMessage);
+      newSocket.on('message_sent', onMessageSent);
+      newSocket.on('messages_read', onMessagesRead);
+      newSocket.on('message_edited', onMessageEdited);
+      newSocket.on('message_deleted', onMessageDeleted);
+      newSocket.on('typing', onTyping);
+      newSocket.on('stop_typing', onStopTyping);
+      newSocket.on('callUser', onCallUser);
+
+      // --- CONNECT ---
+      newSocket.connect();
       setSocket(newSocket);
 
-      return () => newSocket.close();
+      return () => {
+          newSocket.disconnect();
+          newSocket.off(); // Remove all listeners
+      };
   }, []);
-
-  // Socket Listeners
-  useEffect(() => {
-    if (!socket) return;
-
-    // --- EVENT HANDLERS ---
-    
-    const onLoginSuccess = (userData) => {
-      setIsLoading(false);
-      setIsLoggedIn(true);
-      setMe(userData); 
-      localStorage.setItem('messenger_user', userData.username);
-      localStorage.setItem('messenger_me', JSON.stringify(userData)); 
-      if (password) localStorage.setItem('messenger_pass', password);
-      setAuthError("");
-      
-      // Update socket auth for future reconnections
-      if (socket) {
-          socket.auth = { username: userData.username, password: password || localStorage.getItem('messenger_pass') };
-      }
-    };
-
-    const onLoginError = (msg) => {
-        setIsLoading(false);
-        // Only logout if explicit credentials error or if we were manually logging in
-        // If it's a "Server error" during auto-sync, maybe keep the user in "offline mode" UI?
-        // But for "Invalid credentials", definitely logout.
-        if (msg === "Invalid credentials") {
-             setAuthError(msg);
-             setIsLoggedIn(false);
-             setMe(null);
-             localStorage.removeItem('messenger_user');
-             localStorage.removeItem('messenger_pass');
-             localStorage.removeItem('messenger_me');
-             localStorage.removeItem('messenger_chats');
-        } else {
-             // For server errors, show error but don't kick out if we are optimistically logged in
-             if (!localStorage.getItem('messenger_user')) {
-                 setAuthError(msg);
-             } else {
-                 console.error("Background sync failed:", msg);
-             }
-        }
-    };
-
-    const onRegisterSuccess = () => {
-        setIsLoading(false);
-        alert("Registration successful! Login now.");
-        setIsRegistering(false);
-        setAuthError("");
-    };
-    
-    const onRegisterError = (msg) => {
-        setIsLoading(false);
-        setAuthError(msg);
-    };
-
-    const onRecentChats = (chatList) => {
-        setChats(chatList);
-        localStorage.setItem('messenger_chats', JSON.stringify(chatList));
-    };
-    const onSearchResults = (results) => setSearchResults(results);
-    const onOnlineUsers = (ids) => setOnlineUsers(new Set(ids));
-    
-    const onUserStatus = ({ userId, status }) => {
-        setOnlineUsers(prev => {
-            const newSet = new Set(prev);
-            if (status === 'online') newSet.add(userId);
-            else newSet.delete(userId);
-            return newSet;
-        });
-    };
-
-    const onAvatarUpdated = ({ avatarUrl }) => {
-        setMe(prev => {
-            const newState = { ...prev, avatar_url: avatarUrl };
-            localStorage.setItem('messenger_me', JSON.stringify(newState));
-            return newState;
-        });
-    };
-
-    const onHistory = ({ userId, messages: history }) => {
-      setMessages(prev => ({ ...prev, [userId]: history }));
-    };
-
-    const onPrivateMessage = (msg) => {
-      const { fromUserId, username, content, timestamp, id } = msg;
-
-      setMessages(prev => {
-        const userMsgs = prev[fromUserId] || [];
-        const exists = userMsgs.some(m => (id && m.id === id) || (!id && m.created_at === timestamp && m.content === content));
-        if (exists) return prev;
-        return { ...prev, [fromUserId]: [...userMsgs, msg] };
-      });
-      
-      setChats(prev => {
-        if (!prev.find(c => c.id === fromUserId)) return [{ id: fromUserId, username, avatar_url: msg.avatar_url }, ...prev]; 
-        const otherChats = prev.filter(c => c.id !== fromUserId);
-        const currentChat = prev.find(c => c.id === fromUserId) || { id: fromUserId, username };
-        return [currentChat, ...otherChats];
-      });
-
-      if (document.hidden || selectedUserRef.current?.id !== fromUserId) {
-          notificationAudio.current.play().catch(e => console.log("Audio play failed", e)); 
-      } else {
-          socket.emit('mark_read', { fromUserId });
-      }
-    };
-
-    const onMessageSent = (msg) => {
-        const { toUserId, timestamp, content, id } = msg;
-        setMessages(prev => {
-            const userMsgs = prev[toUserId] || [];
-            const exists = userMsgs.some(m => (id && m.id === id) || (!id && m.created_at === timestamp && m.content === content));
-            if (exists) return prev;
-            return { ...prev, [toUserId]: [...userMsgs, { ...msg, from_user_id: meRef.current?.id }] };
-        });
-    };
-
-    const onMessagesRead = ({ byUserId }) => {
-        setMessages(prev => {
-            const userMsgs = prev[byUserId];
-            if (!userMsgs) return prev;
-            return {
-                ...prev,
-                [byUserId]: userMsgs.map(m => m.from_user_id === meRef.current?.id ? { ...m, is_read: true } : m)
-            };
-        });
-    };
-
-    const onMessageEdited = ({ messageId, newContent, fromUserId }) => {
-        setMessages(prev => {
-            const newState = { ...prev };
-            Object.keys(newState).forEach(userId => {
-                newState[userId] = newState[userId].map(m => 
-                    m.id === messageId ? { ...m, content: newContent, is_edited: true } : m
-                );
-            });
-            return newState;
-        });
-    };
-
-    const onMessageDeleted = ({ messageId }) => {
-        setMessages(prev => {
-            const newState = { ...prev };
-            Object.keys(newState).forEach(userId => {
-                newState[userId] = newState[userId].map(m => 
-                    m.id === messageId ? { ...m, is_deleted: true, content: 'Message deleted' } : m
-                );
-            });
-            return newState;
-        });
-    };
-
-    const onTyping = ({ fromUserId }) => setTypingUsers(prev => new Set(prev).add(fromUserId));
-    const onStopTyping = ({ fromUserId }) => setTypingUsers(prev => { const s = new Set(prev); s.delete(fromUserId); return s; });
-
-    const onCallUser = (data) => {
-      setReceivingCall(true);
-      setCaller(data.from);
-      setCallerName(data.name);
-      setCallerSignal(data.signal);
-    };
-
-    // Attach listeners
-    socket.on('login_success', onLoginSuccess);
-    socket.on('login_error', onLoginError);
-    socket.on('register_success', onRegisterSuccess);
-    socket.on('register_error', onRegisterError);
-    socket.on('recent_chats', onRecentChats);
-    socket.on('search_results', onSearchResults);
-    socket.on('online_users', onOnlineUsers);
-    socket.on('user_status', onUserStatus);
-    socket.on('avatar_updated', onAvatarUpdated);
-    socket.on('history', onHistory);
-    socket.on('private message', onPrivateMessage);
-    socket.on('message_sent', onMessageSent);
-    socket.on('messages_read', onMessagesRead);
-    socket.on('message_edited', onMessageEdited);
-    socket.on('message_deleted', onMessageDeleted);
-    socket.on('typing', onTyping);
-    socket.on('stop_typing', onStopTyping);
-    socket.on('callUser', onCallUser);
-
-    // If we are already connected when this effect runs (e.g. strict mode or fast connection),
-    // we might have missed the initial 'connect' event handled in the other effect.
-    // BUT since we emit 'login' inside the 'connect' handler of the OTHER effect,
-    // and that handler runs AFTER the socket is created...
-    // The issue is: The 'login_success' listener HERE might not be attached when the server replies.
-    
-    // To fix this, we can try to re-emit login here if we are connected but not logged in.
-    // REMOVED redundant logic here as it is handled by the new useEffect above.
-
-    return () => {
-        socket.off('login_success', onLoginSuccess);
-        socket.off('login_error', onLoginError);
-        socket.off('register_success', onRegisterSuccess);
-        socket.off('register_error', onRegisterError);
-        socket.off('recent_chats', onRecentChats);
-        socket.off('search_results', onSearchResults);
-        socket.off('online_users', onOnlineUsers);
-        socket.off('user_status', onUserStatus);
-        socket.off('avatar_updated', onAvatarUpdated);
-        socket.off('history', onHistory);
-        socket.off('private message', onPrivateMessage);
-        socket.off('message_sent', onMessageSent);
-        socket.off('messages_read', onMessagesRead);
-        socket.off('message_edited', onMessageEdited);
-        socket.off('message_deleted', onMessageDeleted);
-        socket.off('typing', onTyping);
-        socket.off('stop_typing', onStopTyping);
-        socket.off('callUser', onCallUser);
-    };
-  }, [socket]); // Only depend on socket!
 
 
   // --- HANDLERS ---
