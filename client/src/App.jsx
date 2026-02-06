@@ -156,6 +156,24 @@ function App() {
       newSocket.on('connect_error', (err) => {
           console.error("Connection error:", err);
           setIsConnected(false);
+          
+          // If the server rejected our auto-login attempt
+          if (err.message === "Invalid credentials") {
+              // Clear session and force logout
+              localStorage.removeItem('messenger_user');
+              localStorage.removeItem('messenger_pass');
+              localStorage.removeItem('messenger_me');
+              localStorage.removeItem('messenger_chats');
+              setMe(null);
+              setIsLoggedIn(false);
+              setAuthError("Session expired. Please login again.");
+              
+              // Disconnect socket to prevent retry loop with bad creds
+              newSocket.disconnect();
+              // Re-connect as guest (no auth) so user can see login screen
+              newSocket.auth = {};
+              newSocket.connect();
+          }
       });
 
       setSocket(newSocket);

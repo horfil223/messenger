@@ -53,6 +53,8 @@ let userSockets = {};    // userId -> socketId (only one socket per user for sim
 io.use(async (socket, next) => {
     const { username, password } = socket.handshake.auth;
     
+    // If credentials are provided, we MUST verify them.
+    // If they are wrong, we reject the connection.
     if (username && password) {
         try {
             const user = await findUser(username);
@@ -60,12 +62,19 @@ io.use(async (socket, next) => {
                 // Attach user to socket for connection handler
                 socket.user = { id: user.id, username, avatar_url: user.avatar_url };
                 return next();
+            } else {
+                // Invalid credentials provided - REJECT connection
+                console.log(`Auth failed for ${username}: Invalid credentials`);
+                return next(new Error("Invalid credentials"));
             }
         } catch (e) {
             console.error("Auth middleware error:", e);
+            return next(new Error("Server error during auth"));
         }
     }
-    // Continue even if auth fails (guest/login mode)
+    // Only allow guest connection if NO credentials were provided (e.g. login screen)
+    // But if we are in "Auto-login" mode, we shouldn't really be connecting without creds?
+    // Actually, for the login screen, we connect without creds.
     next();
 });
 
