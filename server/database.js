@@ -1,41 +1,48 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 
-// Connect to DB
-const dbPath = path.resolve(__dirname, 'users.db');
-const db = new sqlite3.Database(dbPath, (err) => {
-  if (err) {
-    console.error('Error connecting to database:', err.message);
-  } else {
-    console.log('Connected to SQLite database.');
+// Connect to DB using connection string from environment variable
+// If running locally without env var, you might need a local postgres or fallback
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false // Required for Render
   }
 });
 
-// Create Users Table
-db.run(`CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT UNIQUE,
-  password TEXT
-)`);
+// Initialize DB
+pool.query(`
+  CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL
+  )
+`).catch(err => console.error('Error creating table:', err));
 
 // Helper functions
 function createUser(username, password) {
-  return new Promise((resolve, reject) => {
-    const hash = bcrypt.hashSync(password, 10);
-    db.run(`INSERT INTO users (username, password) VALUES (?, ?)`, [username, hash], function(err) {
-      if (err) reject(err);
-      else resolve(this.lastID);
-    });
+  return new Promise(async (resolve, reject) => {
+    try {
+      const hash = bcrypt.hashSync(password, 10);
+      const res = await pool.query(
+        'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id',
+        [username, hash]
+      );
+      resolve(res.rows[0].id);
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
 function findUser(username) {
-  return new Promise((resolve, reject) => {
-    db.get(`SELECT * FROM users WHERE username = ?`, [username], (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
-    });
+  return new Promise(async (resolve, reject) => {
+    try {
+      const res = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+      resolve(res.rows[0]);
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
