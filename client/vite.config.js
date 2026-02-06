@@ -13,6 +13,10 @@ export default defineConfig({
       util: "util"
     }
   },
+  define: {
+    'global': 'window',
+    'process.env': {}
+  },
   build: {
     outDir: '../server/public',
     emptyOutDir: true
