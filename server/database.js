@@ -1,14 +1,22 @@
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 
-// Connect to DB using connection string from environment variable
-// If running locally without env var, you might need a local postgres or fallback
-const pool = new Pool({
+// Config SSL based on environment
+// Timeweb/Render usually require SSL for external connections, but internal might differ.
+// Best approach: allow unauthorized certs if SSL is enabled.
+const connectionConfig = {
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false // Required for Render
-  }
-});
+};
+
+// If DATABASE_URL contains "sslmode", pg might handle it automatically.
+// But usually for cloud providers we need explicit SSL config:
+if (process.env.DATABASE_URL && process.env.DATABASE_URL.includes("ssl")) {
+    connectionConfig.ssl = {
+        rejectUnauthorized: false
+    };
+}
+
+const pool = new Pool(connectionConfig);
 
 // Initialize DB
 pool.query(`
