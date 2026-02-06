@@ -41,6 +41,10 @@ const initDB = async () => {
     try { await pool.query(`ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'`); } catch (e) {}
     try { await pool.query(`ALTER TABLE messages ADD COLUMN file_url TEXT`); } catch (e) {}
     try { await pool.query(`ALTER TABLE messages ADD COLUMN file_name TEXT`); } catch (e) {}
+    
+    // New migrations for Read Receipts and Avatars
+    try { await pool.query(`ALTER TABLE messages ADD COLUMN is_read BOOLEAN DEFAULT FALSE`); } catch (e) {}
+    try { await pool.query(`ALTER TABLE users ADD COLUMN avatar_url TEXT`); } catch (e) {}
 
     console.log("Database tables initialized and migrated");
   } catch (err) {
@@ -56,10 +60,10 @@ function createUser(username, password) {
     try {
       const hash = bcrypt.hashSync(password, 10);
       const res = await pool.query(
-        'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id',
+        'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username, avatar_url',
         [username, hash]
       );
-      resolve(res.rows[0].id);
+      resolve(res.rows[0]);
     } catch (err) {
       reject(err);
     }
@@ -77,6 +81,20 @@ function findUser(username) {
   });
 }
 
+function updateUserAvatar(userId, avatarUrl) {
+    return new Promise(async (resolve, reject) => {
+        try {
+            const res = await pool.query(
+                'UPDATE users SET avatar_url = $1 WHERE id = $2 RETURNING avatar_url',
+                [avatarUrl, userId]
+            );
+            resolve(res.rows[0]);
+        } catch (err) {
+            reject(err);
+        }
+    });
+}
+
 function verifyPassword(user, password) {
   return bcrypt.compareSync(password, user.password);
 }
@@ -89,7 +107,7 @@ function searchUsers(query, currentUserId) {
     try {
       // Find users matching query, exclude current user
       const res = await pool.query(
-        'SELECT id, username FROM users WHERE username ILIKE $1 AND id != $2 LIMIT 20',
+        'SELECT id, username, avatar_url FROM users WHERE username ILIKE $1 AND id != $2 LIMIT 20',
         [`%${query}%`, currentUserId]
       );
       resolve(res.rows);
@@ -148,6 +166,18 @@ function deleteMessage(messageId, userId) {
     });
 }
 
+function markMessagesAsRead(fromUserId, toUserId) {
+    return new Promise(async (resolve, reject) => {
+        try {
+            await pool.query(
+                'UPDATE messages SET is_read = TRUE WHERE from_user_id = $1 AND to_user_id = $2 AND is_read = FALSE',
+                [fromUserId, toUserId]
+            );
+            resolve(true);
+        } catch (err) { reject(err); }
+    });
+}
+
 // Get chat history between two users
 function getHistory(user1Id, user2Id) {
   return new Promise(async (resolve, reject) => {
@@ -171,7 +201,7 @@ function getRecentChats(currentUserId) {
     return new Promise(async (resolve, reject) => {
       try {
         const res = await pool.query(
-          `SELECT DISTINCT u.id, u.username 
+          `SELECT DISTINCT u.id, u.username, u.avatar_url 
            FROM users u
            JOIN messages m ON (m.from_user_id = u.id OR m.to_user_id = u.id)
            WHERE (m.from_user_id = $1 OR m.to_user_id = $1) AND u.id != $1
@@ -187,12 +217,14 @@ function getRecentChats(currentUserId) {
 
 module.exports = { 
     createUser, 
-    findUser, 
+    findUser,
+    updateUserAvatar, 
     verifyPassword,
     searchUsers,
     saveMessage,
     editMessage,
     deleteMessage,
+    markMessagesAsRead,
     getHistory,
     getRecentChats
 };

@@ -8,11 +8,13 @@ const path = require('path');
 const { 
   createUser, 
   findUser, 
+  updateUserAvatar,
   verifyPassword, 
   searchUsers, 
   saveMessage, 
   editMessage,
   deleteMessage,
+  markMessagesAsRead,
   getHistory, 
   getRecentChats 
 } = require('./database');
@@ -58,7 +60,8 @@ io.on('connection', (socket) => {
         connectedUsers[socket.id] = { socketId: socket.id, userId: user.id, username };
         userSockets[user.id] = socket.id;
 
-        socket.emit('login_success', { id: user.id, username });
+        // Pass avatar_url
+        socket.emit('login_success', { id: user.id, username, avatar_url: user.avatar_url });
         console.log(`User logged in: ${username} (ID: ${user.id})`);
         
         // Broadcast online status
@@ -79,6 +82,18 @@ io.on('connection', (socket) => {
       console.error(err);
       socket.emit('login_error', 'Server error');
     }
+  });
+
+  // UPDATE AVATAR
+  socket.on('update_avatar', async ({ avatarUrl }) => {
+      const user = connectedUsers[socket.id];
+      if (!user) return;
+      try {
+          const result = await updateUserAvatar(user.userId, avatarUrl);
+          socket.emit('avatar_updated', { avatarUrl: result.avatar_url });
+      } catch (e) {
+          console.error(e);
+      }
   });
 
   // TYPING STATUS
@@ -120,6 +135,21 @@ io.on('connection', (socket) => {
     }
   });
 
+  // MARK READ
+  socket.on('mark_read', async ({ fromUserId }) => {
+      const me = connectedUsers[socket.id];
+      if (!me) return;
+      try {
+          await markMessagesAsRead(fromUserId, me.userId);
+          
+          // Notify the sender that their messages were read
+          const senderSocketId = userSockets[fromUserId];
+          if (senderSocketId) {
+              io.to(senderSocketId).emit('messages_read', { byUserId: me.userId });
+          }
+      } catch (e) { console.error(e); }
+  });
+
   // PRIVATE MESSAGE
   socket.on('private message', async ({ content, toUserId, type = 'text', file = null, fileName = null }) => {
     const fromUser = connectedUsers[socket.id];
@@ -146,7 +176,8 @@ io.on('connection', (socket) => {
           file_url: msg.file_url,
           file_name: msg.file_name,
           is_edited: msg.is_edited,
-          is_deleted: msg.is_deleted
+          is_deleted: msg.is_deleted,
+          is_read: msg.is_read
       };
 
       // Send to recipient if online
