@@ -505,9 +505,9 @@ function App() {
             {/* Header */}
             <div className="p-4 border-b dark:border-slate-800 border-slate-200 flex justify-between items-center sticky top-0 dark:bg-slate-900/80 bg-white/80 backdrop-blur-md z-20">
                 <div className="flex items-center gap-3">
-                    <div className="relative group">
-                        <Avatar user={me} onClick={() => avatarInputRef.current?.click()} />
-                        <div className="absolute inset-0 bg-black/40 rounded-full opacity-0 group-hover:opacity-100 flex items-center justify-center cursor-pointer transition">
+                    <div className="relative group cursor-pointer" onClick={() => avatarInputRef.current?.click()}>
+                        <Avatar user={me} />
+                        <div className="absolute inset-0 bg-black/40 rounded-full opacity-0 group-hover:opacity-100 flex items-center justify-center transition">
                             <Camera size={16} className="text-white" />
                         </div>
                         <input type="file" ref={avatarInputRef} className="hidden" onChange={handleAvatarUpload} accept="image/*" />
