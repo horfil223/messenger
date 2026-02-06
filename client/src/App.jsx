@@ -5,14 +5,17 @@ import SimplePeer from 'simple-peer'
 const socket = io();
 
 function App() {
-  // App State
+  // Auth State
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isRegistering, setIsRegistering] = useState(false);
   const [username, setUsername] = useState("");
-  const [users, setUsers] = useState([]); // List of online users
-  const [selectedUser, setSelectedUser] = useState(null); // The user we are currently chatting with
-  const [chats, setChats] = useState({}); // { userId: [ {text, fromSelf} ] }
-  
-  // Connection State
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+
+  // App State
+  const [users, setUsers] = useState([]); 
+  const [selectedUser, setSelectedUser] = useState(null); 
+  const [chats, setChats] = useState({}); 
   const [me, setMe] = useState("");
   const [isConnected, setIsConnected] = useState(socket.connected);
 
@@ -24,25 +27,22 @@ function App() {
   const [callAccepted, setCallAccepted] = useState(false);
   const [callEnded, setCallEnded] = useState(false);
   const [callerName, setCallerName] = useState("");
+  const [callStatus, setCallStatus] = useState(""); // "Calling...", "Connecting..."
 
   const myVideo = useRef();
   const userVideo = useRef();
   const connectionRef = useRef();
 
   useEffect(() => {
-    // Socket Listeners
     socket.on('connect', () => setIsConnected(true));
     socket.on('disconnect', () => setIsConnected(false));
-    
     socket.on("me", (id) => setMe(id));
     
     socket.on("users", (userList) => {
-      // Filter out self from user list
       setUsers(userList.filter(u => u.id !== socket.id));
     });
 
     socket.on("private message", ({ content, from, username }) => {
-      // Update chat history
       setChats(prevChats => {
         const userChat = prevChats[from] || [];
         return {
@@ -52,7 +52,21 @@ function App() {
       });
     });
 
-    // WebRTC Listeners
+    // Auth Events
+    socket.on('register_success', () => {
+      setAuthError("");
+      alert("Registration successful! You can now login.");
+      setIsRegistering(false);
+    });
+    socket.on('register_error', (msg) => setAuthError(msg));
+    socket.on('login_success', (user) => {
+      setAuthError("");
+      setIsLoggedIn(true);
+      startCamera(); // Try to start camera on login
+    });
+    socket.on('login_error', (msg) => setAuthError(msg));
+
+    // WebRTC Events
     socket.on("callUser", (data) => {
       setReceivingCall(true);
       setCaller(data.from);
@@ -66,42 +80,42 @@ function App() {
       socket.off('me');
       socket.off('users');
       socket.off('private message');
+      socket.off('register_success');
+      socket.off('register_error');
+      socket.off('login_success');
+      socket.off('login_error');
       socket.off('callUser');
     };
   }, []);
 
-  const handleLogin = (e) => {
+  const handleAuth = (e) => {
     e.preventDefault();
-    if (username.trim()) {
-      socket.emit("login", username);
-      setIsLoggedIn(true);
-      // Automatically ask for camera permissions on login for convenience
-      startCamera();
+    if (!username.trim() || !password.trim()) return;
+
+    if (isRegistering) {
+      socket.emit('register', { username, password });
+    } else {
+      socket.emit('login', { username, password });
     }
   };
 
-  const startCamera = () => {
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-      .then((currentStream) => {
-        setStream(currentStream);
-        if (myVideo.current) {
-          myVideo.current.srcObject = currentStream;
-        }
-      })
-      .catch(err => console.error("Camera error:", err));
+  const startCamera = async () => {
+    try {
+      const currentStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setStream(currentStream);
+      if (myVideo.current) myVideo.current.srcObject = currentStream;
+      return currentStream;
+    } catch (err) {
+      console.error("Camera error:", err);
+      alert("Could not access camera/microphone. Please check permissions.");
+      return null;
+    }
   };
 
   const sendMessage = (e, text) => {
     e.preventDefault();
     if (!text || !selectedUser) return;
-
-    // Emit to server
-    socket.emit("private message", {
-      content: text,
-      to: selectedUser.id
-    });
-
-    // Update local chat history
+    socket.emit("private message", { content: text, to: selectedUser.id });
     setChats(prevChats => {
       const userChat = prevChats[selectedUser.id] || [];
       return {
@@ -112,11 +126,19 @@ function App() {
   };
 
   // --- WebRTC Logic ---
-  const callUser = (id) => {
+  const initiateCall = async (id) => {
+    let currentStream = stream;
+    if (!currentStream) {
+      currentStream = await startCamera();
+    }
+    if (!currentStream) return; // Failed to get camera
+
+    setCallStatus("Calling...");
+    
     const peer = new SimplePeer({
       initiator: true,
       trickle: false,
-      stream: stream
+      stream: currentStream
     });
 
     peer.on("signal", (data) => {
@@ -128,14 +150,19 @@ function App() {
       });
     });
 
-    peer.on("stream", (currentStream) => {
-      if (userVideo.current) {
-        userVideo.current.srcObject = currentStream;
-      }
+    peer.on("stream", (remoteStream) => {
+      setCallStatus("");
+      if (userVideo.current) userVideo.current.srcObject = remoteStream;
+    });
+    
+    peer.on("error", err => {
+        console.error("Peer error:", err);
+        setCallStatus("Call Failed");
     });
 
     socket.on("callAccepted", (signal) => {
       setCallAccepted(true);
+      setCallStatus("Connecting...");
       peer.signal(signal);
     });
 
@@ -144,6 +171,8 @@ function App() {
 
   const answerCall = () => {
     setCallAccepted(true);
+    setCallStatus("Connecting...");
+    
     const peer = new SimplePeer({
       initiator: false,
       trickle: false,
@@ -154,10 +183,9 @@ function App() {
       socket.emit("answerCall", { signal: data, to: caller });
     });
 
-    peer.on("stream", (currentStream) => {
-      if (userVideo.current) {
-        userVideo.current.srcObject = currentStream;
-      }
+    peer.on("stream", (remoteStream) => {
+      setCallStatus("");
+      if (userVideo.current) userVideo.current.srcObject = remoteStream;
     });
 
     peer.signal(callerSignal);
@@ -167,27 +195,38 @@ function App() {
   const leaveCall = () => {
     setCallEnded(true);
     if (connectionRef.current) connectionRef.current.destroy();
-    window.location.reload(); // Simple reset
+    window.location.reload();
   };
 
   // --- RENDER ---
-
   if (!isLoggedIn) {
     return (
       <div className="flex items-center justify-center h-screen bg-gray-100">
         <div className="bg-white p-8 rounded-lg shadow-xl w-96">
-          <h1 className="text-2xl font-bold mb-6 text-center text-blue-600">Welcome to Messenger</h1>
-          <form onSubmit={handleLogin} className="flex flex-col gap-4">
+          <h1 className="text-2xl font-bold mb-6 text-center text-blue-600">Messenger</h1>
+          <form onSubmit={handleAuth} className="flex flex-col gap-4">
             <input
               className="border p-3 rounded focus:ring-2 focus:ring-blue-500 outline-none"
-              placeholder="Enter your name..."
+              placeholder="Username"
               value={username}
               onChange={e => setUsername(e.target.value)}
-              autoFocus
             />
+            <input
+              type="password"
+              className="border p-3 rounded focus:ring-2 focus:ring-blue-500 outline-none"
+              placeholder="Password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+            />
+            {authError && <div className="text-red-500 text-sm text-center">{authError}</div>}
+            
             <button type="submit" className="bg-blue-600 text-white p-3 rounded font-bold hover:bg-blue-700 transition">
-              Join
+              {isRegistering ? "Register" : "Login"}
             </button>
+            
+            <div className="text-center text-sm text-gray-500 cursor-pointer hover:underline" onClick={() => { setIsRegistering(!isRegistering); setAuthError(""); }}>
+              {isRegistering ? "Already have an account? Login" : "Don't have an account? Register"}
+            </div>
           </form>
         </div>
       </div>
@@ -196,11 +235,10 @@ function App() {
 
   return (
     <div className="flex h-screen bg-gray-100 overflow-hidden">
-      {/* LEFT SIDEBAR: User List */}
       <div className="w-1/4 bg-white border-r flex flex-col">
         <div className="p-4 bg-blue-600 text-white shadow">
           <h2 className="font-bold text-lg">Chats</h2>
-          <div className="text-xs opacity-80">Logged in as: {username}</div>
+          <div className="text-xs opacity-80">{username}</div>
         </div>
         <div className="flex-1 overflow-y-auto">
           {users.length === 0 ? (
@@ -220,26 +258,23 @@ function App() {
         </div>
       </div>
 
-      {/* RIGHT AREA: Chat & Video */}
       <div className="flex-1 flex flex-col relative">
         {selectedUser ? (
           <>
-            {/* Chat Header */}
             <div className="p-4 bg-white border-b flex justify-between items-center shadow-sm z-10">
               <h3 className="font-bold text-lg text-gray-800">{selectedUser.username}</h3>
               <div className="flex gap-2">
-                {stream && !callAccepted && (
+                {!callAccepted && (
                   <button 
-                    onClick={() => callUser(selectedUser.id)}
-                    className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded shadow transition"
+                    onClick={() => initiateCall(selectedUser.id)}
+                    className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded shadow transition flex items-center gap-2"
                   >
-                    📞 Call
+                    <span>📞</span> Call
                   </button>
                 )}
               </div>
             </div>
 
-            {/* Messages Area */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
               {(chats[selectedUser.id] || []).map((msg, idx) => (
                 <div key={idx} className={`flex ${msg.fromSelf ? 'justify-end' : 'justify-start'}`}>
@@ -248,31 +283,25 @@ function App() {
                   </div>
                 </div>
               ))}
-              {(!chats[selectedUser.id] || chats[selectedUser.id].length === 0) && (
-                 <div className="text-center text-gray-400 mt-10">Start a conversation with {selectedUser.username}</div>
-              )}
             </div>
-
-            {/* Message Input */}
             <ChatInput onSend={sendMessage} />
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-center text-gray-400">
-            Select a user to start chatting
-          </div>
+          <div className="flex-1 flex items-center justify-center text-gray-400">Select a user</div>
         )}
 
-        {/* Video Call Overlay */}
         {(callAccepted || receivingCall) && !callEnded && (
-          <div className="absolute inset-0 bg-black bg-opacity-90 z-50 flex flex-col items-center justify-center">
+          <div className="absolute inset-0 bg-black bg-opacity-95 z-50 flex flex-col items-center justify-center">
+            {callStatus && <div className="text-white text-xl mb-4 animate-pulse">{callStatus}</div>}
+            
             <div className="grid grid-cols-2 gap-4 w-full max-w-4xl p-4">
               <div className="relative">
-                 <video playsInline muted ref={myVideo} autoPlay className="w-full rounded-lg border-2 border-gray-700" />
+                 <video playsInline muted ref={myVideo} autoPlay className="w-full rounded-lg border-2 border-gray-700 bg-gray-900" />
                  <span className="absolute bottom-2 left-2 text-white bg-black bg-opacity-50 px-2 rounded">Me</span>
               </div>
               <div className="relative">
-                 {callAccepted && <video playsInline ref={userVideo} autoPlay className="w-full rounded-lg border-2 border-gray-700" />}
-                 <span className="absolute bottom-2 left-2 text-white bg-black bg-opacity-50 px-2 rounded">{callerName || selectedUser?.username || "Friend"}</span>
+                 {callAccepted && <video playsInline ref={userVideo} autoPlay className="w-full rounded-lg border-2 border-gray-700 bg-gray-900" />}
+                 <span className="absolute bottom-2 left-2 text-white bg-black bg-opacity-50 px-2 rounded">{callerName || "Friend"}</span>
               </div>
             </div>
             
@@ -296,19 +325,14 @@ function App() {
 function ChatInput({ onSend }) {
   const [text, setText] = useState("");
   return (
-    <form 
-      onSubmit={(e) => { onSend(e, text); setText(""); }} 
-      className="p-4 bg-white border-t flex gap-2"
-    >
+    <form onSubmit={(e) => { onSend(e, text); setText(""); }} className="p-4 bg-white border-t flex gap-2">
       <input
         className="flex-1 border p-3 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400 px-6"
         placeholder="Type a message..."
         value={text}
         onChange={e => setText(e.target.value)}
       />
-      <button type="submit" className="bg-blue-600 text-white w-12 h-12 rounded-full flex items-center justify-center hover:bg-blue-700 shadow transition">
-        ➤
-      </button>
+      <button type="submit" className="bg-blue-600 text-white w-12 h-12 rounded-full flex items-center justify-center hover:bg-blue-700 shadow transition">➤</button>
     </form>
   )
 }
