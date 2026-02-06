@@ -21,8 +21,8 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isRegistering, setIsRegistering] = useState(false);
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+  const [username, setUsername] = useState(localStorage.getItem('messenger_user') || "");
+  const [password, setPassword] = useState(localStorage.getItem('messenger_pass') || "");
   const [authError, setAuthError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isAutoLoggingIn, setIsAutoLoggingIn] = useState(!!localStorage.getItem('messenger_user'));
@@ -96,6 +96,19 @@ function App() {
         }
     }
   }, [messages, selectedUser, typingUsers, isConnected]);
+
+  // Safety timeout for auto-login
+  useEffect(() => {
+      if (isAutoLoggingIn) {
+          const timer = setTimeout(() => {
+              if (!isLoggedIn) {
+                  setIsAutoLoggingIn(false);
+                  setAuthError("Session restore timed out. Please login manually.");
+              }
+          }, 5000);
+          return () => clearTimeout(timer);
+      }
+  }, [isAutoLoggingIn, isLoggedIn]);
 
   // Init Socket
   useEffect(() => {
