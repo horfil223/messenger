@@ -34,7 +34,15 @@ const initDB = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    console.log("Database tables initialized");
+    
+    // Migrations for new features
+    try { await pool.query(`ALTER TABLE messages ADD COLUMN is_deleted BOOLEAN DEFAULT FALSE`); } catch (e) {}
+    try { await pool.query(`ALTER TABLE messages ADD COLUMN is_edited BOOLEAN DEFAULT FALSE`); } catch (e) {}
+    try { await pool.query(`ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'`); } catch (e) {}
+    try { await pool.query(`ALTER TABLE messages ADD COLUMN file_url TEXT`); } catch (e) {}
+    try { await pool.query(`ALTER TABLE messages ADD COLUMN file_name TEXT`); } catch (e) {}
+
+    console.log("Database tables initialized and migrated");
   } catch (err) {
     console.error('Error creating tables:', err);
   }
@@ -92,18 +100,52 @@ function searchUsers(query, currentUserId) {
 }
 
 // Save a private message
-function saveMessage(fromId, toId, content) {
+function saveMessage(fromId, toId, content, type = 'text', fileUrl = null, fileName = null) {
   return new Promise(async (resolve, reject) => {
     try {
       const res = await pool.query(
-        'INSERT INTO messages (from_user_id, to_user_id, content) VALUES ($1, $2, $3) RETURNING *',
-        [fromId, toId, content]
+        'INSERT INTO messages (from_user_id, to_user_id, content, type, file_url, file_name) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        [fromId, toId, content, type, fileUrl, fileName]
       );
       resolve(res.rows[0]);
     } catch (err) {
       reject(err);
     }
   });
+}
+
+function editMessage(messageId, userId, newContent) {
+    return new Promise(async (resolve, reject) => {
+        try {
+            // Check ownership
+            const check = await pool.query('SELECT from_user_id FROM messages WHERE id = $1', [messageId]);
+            if (check.rows.length === 0 || check.rows[0].from_user_id !== userId) {
+                return reject("Unauthorized or not found");
+            }
+            const res = await pool.query(
+                'UPDATE messages SET content = $1, is_edited = TRUE WHERE id = $2 RETURNING *',
+                [newContent, messageId]
+            );
+            resolve(res.rows[0]);
+        } catch (err) { reject(err); }
+    });
+}
+
+function deleteMessage(messageId, userId) {
+    return new Promise(async (resolve, reject) => {
+        try {
+             // Check ownership
+            const check = await pool.query('SELECT from_user_id FROM messages WHERE id = $1', [messageId]);
+            if (check.rows.length === 0 || check.rows[0].from_user_id !== userId) {
+                return reject("Unauthorized or not found");
+            }
+            const res = await pool.query(
+                'UPDATE messages SET is_deleted = TRUE, content = \'Message deleted\' WHERE id = $1 RETURNING *',
+                [messageId]
+            );
+            resolve(res.rows[0]);
+        } catch (err) { reject(err); }
+    });
 }
 
 // Get chat history between two users
@@ -149,6 +191,8 @@ module.exports = {
     verifyPassword,
     searchUsers,
     saveMessage,
+    editMessage,
+    deleteMessage,
     getHistory,
     getRecentChats
 };

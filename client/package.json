@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "browserify-zlib": "^0.2.0",
+    "buffer": "^6.0.3",
     "date-fns": "^4.1.0",
     "emoji-picker-react": "^4.17.4",
     "framer-motion": "^12.33.0",
@@ -21,7 +22,8 @@
     "simple-peer": "^9.11.1",
     "socket.io-client": "^4.7.5",
     "stream-browserify": "^3.0.0",
-    "util": "^0.12.5"
+    "util": "^0.12.5",
+    "vite-plugin-node-polyfills": "^0.25.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",

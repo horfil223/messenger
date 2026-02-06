@@ -3,18 +3,18 @@ import io from 'socket.io-client';
 import SimplePeer from 'simple-peer';
 import { 
   Phone, Video, Send, Search, User, LogOut, 
-  Menu, X, Smile, MoreVertical, Check, CheckCheck 
+  Menu, X, Smile, MoreVertical, Check, CheckCheck,
+  Paperclip, Trash2, Edit2, FileText, Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import EmojiPicker from 'emoji-picker-react';
-
-const socket = io();
 
 // Simple notification sound (Base64)
 const NOTIFICATION_SOUND = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//uQZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWgAAAA0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//uQZAAAAAAAIAAAAAAREALgAAAAAAIAAAAAAREALgAAABBAAAAgEAF//uQZAAAAAAAIAAAAAAREALgAAAAAAIAAAAAAREALgAAABBAAAAgEAF//uQZAAAAAAAIAAAAAAREALgAAAAAAIAAAAAAREALgAAABBAAAAgEAF"; 
 
 function App() {
   // --- STATE ---
+  const [socket, setSocket] = useState(null);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isRegistering, setIsRegistering] = useState(false);
   const [username, setUsername] = useState("");
@@ -33,6 +33,12 @@ function App() {
   const [showChatOnMobile, setShowChatOnMobile] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [inputMessage, setInputMessage] = useState("");
+  const [editingMessageId, setEditingMessageId] = useState(null);
+
+  // Refs for state accessible in listeners
+  const selectedUserRef = useRef(null);
+  const meRef = useRef(null);
+  const chatsRef = useRef([]);
 
   // WebRTC
   const [stream, setStream] = useState(null);
@@ -51,8 +57,14 @@ function App() {
   const messagesEndRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const notificationAudio = useRef(new Audio(NOTIFICATION_SOUND));
+  const fileInputRef = useRef(null);
 
   // --- EFFECTS ---
+
+  // Keep refs updated
+  useEffect(() => { selectedUserRef.current = selectedUser; }, [selectedUser]);
+  useEffect(() => { meRef.current = me; }, [me]);
+  useEffect(() => { chatsRef.current = chats; }, [chats]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -62,8 +74,18 @@ function App() {
     scrollToBottom();
   }, [messages, selectedUser, typingUsers]);
 
-  // Auth & Socket Listeners
+  // Init Socket
   useEffect(() => {
+      const newSocket = io();
+      setSocket(newSocket);
+      return () => newSocket.close();
+  }, []);
+
+  // Socket Listeners
+  useEffect(() => {
+    if (!socket) return;
+
+    // Auth helpers
     const savedUser = localStorage.getItem('messenger_user');
     const savedPass = localStorage.getItem('messenger_pass');
     if (savedUser && savedPass) {
@@ -73,110 +95,189 @@ function App() {
       else socket.once('connect', () => socket.emit('login', { username: savedUser, password: savedPass }));
     }
 
-    socket.on('login_success', (userData) => {
+    // --- EVENT HANDLERS ---
+    
+    const onLoginSuccess = (userData) => {
       setIsLoggedIn(true);
       setMe(userData);
-      localStorage.setItem('messenger_user', username);
-      localStorage.setItem('messenger_pass', password);
-    });
+      localStorage.setItem('messenger_user', userData.username); // Use returned username
+      // We need password to re-login, so keep using the state one or saved one
+      if (password) localStorage.setItem('messenger_pass', password);
+    };
 
-    socket.on('login_error', (msg) => {
+    const onLoginError = (msg) => {
         setAuthError(msg);
         if (msg === "Invalid credentials") {
              localStorage.removeItem('messenger_user');
              localStorage.removeItem('messenger_pass');
         }
-    });
+    };
 
-    socket.on('register_success', () => {
+    const onRegisterSuccess = () => {
         alert("Registration successful! Login now.");
         setIsRegistering(false);
-    });
+    };
     
-    socket.on('register_error', (msg) => setAuthError(msg));
+    const onRegisterError = (msg) => setAuthError(msg);
 
-    socket.on('recent_chats', (chatList) => setChats(chatList));
-    socket.on('search_results', (results) => setSearchResults(results));
+    const onRecentChats = (chatList) => setChats(chatList);
+    const onSearchResults = (results) => setSearchResults(results);
     
-    socket.on('online_users', (ids) => setOnlineUsers(new Set(ids)));
-    socket.on('user_status', ({ userId, status }) => {
+    const onOnlineUsers = (ids) => setOnlineUsers(new Set(ids));
+    const onUserStatus = ({ userId, status }) => {
         setOnlineUsers(prev => {
             const newSet = new Set(prev);
             if (status === 'online') newSet.add(userId);
             else newSet.delete(userId);
             return newSet;
         });
-    });
+    };
 
-    socket.on('history', ({ userId, messages: history }) => {
+    const onHistory = ({ userId, messages: history }) => {
       setMessages(prev => ({ ...prev, [userId]: history }));
-    });
+    };
 
-    socket.on('private message', ({ content, fromUserId, username, timestamp }) => {
+    const onPrivateMessage = (msg) => {
+      // msg: { id, content, fromUserId, username, timestamp, type, file_url, ... }
+      const { fromUserId, username, content, timestamp, id } = msg;
+
       setMessages(prev => {
         const userMsgs = prev[fromUserId] || [];
-        return { ...prev, [fromUserId]: [...userMsgs, { content, from_user_id: fromUserId, created_at: timestamp }] };
+        // Robust deduplication using ID if available, or timestamp+content
+        const exists = userMsgs.some(m => 
+            (id && m.id === id) || 
+            (!id && m.created_at === timestamp && m.content === content)
+        );
+        if (exists) return prev;
+
+        return { ...prev, [fromUserId]: [...userMsgs, msg] };
       });
       
       setChats(prev => {
         if (!prev.find(c => c.id === fromUserId)) return [{ id: fromUserId, username }, ...prev];
-        // Move to top
         const otherChats = prev.filter(c => c.id !== fromUserId);
         const currentChat = prev.find(c => c.id === fromUserId) || { id: fromUserId, username };
         return [currentChat, ...otherChats];
       });
 
-      // Play sound if not in this chat or window blurred
-      if (document.hidden || selectedUser?.id !== fromUserId) {
-          // notificationAudio.current.play().catch(e => console.log("Audio play failed", e)); 
+      // Use Ref for current selection check
+      if (document.hidden || selectedUserRef.current?.id !== fromUserId) {
+          notificationAudio.current.play().catch(e => console.log("Audio play failed", e)); 
       }
-    });
+    };
 
-    socket.on('message_sent', ({ content, toUserId, timestamp }) => {
+    const onMessageSent = (msg) => {
+        const { toUserId, timestamp, content, id } = msg;
         setMessages(prev => {
             const userMsgs = prev[toUserId] || [];
-            return { ...prev, [toUserId]: [...userMsgs, { content, from_user_id: me?.id, created_at: timestamp }] };
+            const exists = userMsgs.some(m => 
+                (id && m.id === id) || 
+                (!id && m.created_at === timestamp && m.content === content)
+            );
+            if (exists) return prev;
+            
+            // Ensure we store it as "from me"
+            return { ...prev, [toUserId]: [...userMsgs, { ...msg, from_user_id: meRef.current?.id }] };
         });
-    });
+    };
 
-    // Typing
-    socket.on('typing', ({ fromUserId }) => {
+    const onMessageEdited = ({ messageId, newContent, fromUserId }) => {
+        // We need to find where this message is. It could be in 'fromUserId' (if they sent it) or 'toUserId' (if I sent it)
+        // Actually, the server sends `fromUserId` as the person who edited (who originally sent it).
+        // If I am the sender, `fromUserId` is ME. So I look in `selectedUser` messages?
+        // Simpler: iterate all chats in state? No, too expensive.
+        // We usually only have messages loaded for specific users.
+        
+        setMessages(prev => {
+            const newState = { ...prev };
+            Object.keys(newState).forEach(userId => {
+                newState[userId] = newState[userId].map(m => 
+                    m.id === messageId ? { ...m, content: newContent, is_edited: true } : m
+                );
+            });
+            return newState;
+        });
+    };
+
+    const onMessageDeleted = ({ messageId }) => {
+        setMessages(prev => {
+            const newState = { ...prev };
+            Object.keys(newState).forEach(userId => {
+                newState[userId] = newState[userId].map(m => 
+                    m.id === messageId ? { ...m, is_deleted: true, content: 'Message deleted' } : m
+                );
+            });
+            return newState;
+        });
+    };
+
+    const onTyping = ({ fromUserId }) => {
         setTypingUsers(prev => new Set(prev).add(fromUserId));
-    });
-    socket.on('stop_typing', ({ fromUserId }) => {
+    };
+    const onStopTyping = ({ fromUserId }) => {
         setTypingUsers(prev => {
             const newSet = new Set(prev);
             newSet.delete(fromUserId);
             return newSet;
         });
-    });
+    };
 
-    // Call
-    socket.on("callUser", (data) => {
+    const onCallUser = (data) => {
       setReceivingCall(true);
       setCaller(data.from);
       setCallerName(data.name);
       setCallerSignal(data.signal);
-    });
+    };
+
+    socket.on('login_success', onLoginSuccess);
+    socket.on('login_error', onLoginError);
+    socket.on('register_success', onRegisterSuccess);
+    socket.on('register_error', onRegisterError);
+    socket.on('recent_chats', onRecentChats);
+    socket.on('search_results', onSearchResults);
+    socket.on('online_users', onOnlineUsers);
+    socket.on('user_status', onUserStatus);
+    socket.on('history', onHistory);
+    socket.on('private message', onPrivateMessage);
+    socket.on('message_sent', onMessageSent);
+    socket.on('message_edited', onMessageEdited);
+    socket.on('message_deleted', onMessageDeleted);
+    socket.on('typing', onTyping);
+    socket.on('stop_typing', onStopTyping);
+    socket.on('callUser', onCallUser);
 
     return () => {
-        socket.off('login_success');
-        socket.off('recent_chats');
-        socket.off('private message');
-        // ... cleanup
+        socket.off('login_success', onLoginSuccess);
+        socket.off('login_error', onLoginError);
+        socket.off('register_success', onRegisterSuccess);
+        socket.off('register_error', onRegisterError);
+        socket.off('recent_chats', onRecentChats);
+        socket.off('search_results', onSearchResults);
+        socket.off('online_users', onOnlineUsers);
+        socket.off('user_status', onUserStatus);
+        socket.off('history', onHistory);
+        socket.off('private message', onPrivateMessage);
+        socket.off('message_sent', onMessageSent);
+        socket.off('message_edited', onMessageEdited);
+        socket.off('message_deleted', onMessageDeleted);
+        socket.off('typing', onTyping);
+        socket.off('stop_typing', onStopTyping);
+        socket.off('callUser', onCallUser);
     };
-  }, [username, password, me, selectedUser]);
+  }, [socket]); // Only depend on socket!
 
 
   // --- HANDLERS ---
 
   const handleAuth = (e) => {
     e.preventDefault();
+    if (!socket) return;
     if (isRegistering) socket.emit('register', { username, password });
     else socket.emit('login', { username, password });
   };
 
   const selectUser = (user) => {
+    if (!socket) return;
     setSelectedUser(user);
     setSearchQuery("");
     setSearchResults([]);
@@ -188,12 +289,11 @@ function App() {
 
   const handleInput = (e) => {
       setInputMessage(e.target.value);
+      if (!socket) return;
       
       if (selectedUser) {
           socket.emit('typing', { toUserId: selectedUser.id });
-          
           if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-          
           typingTimeoutRef.current = setTimeout(() => {
               socket.emit('stop_typing', { toUserId: selectedUser.id });
           }, 2000);
@@ -202,11 +302,50 @@ function App() {
 
   const sendMessage = (e) => {
     e.preventDefault();
-    if (!inputMessage.trim() || !selectedUser) return;
-    socket.emit("private message", { content: inputMessage, toUserId: selectedUser.id });
+    if ((!inputMessage.trim() && !editingMessageId) || !selectedUser || !socket) return;
+
+    if (editingMessageId) {
+        socket.emit('edit_message', { messageId: editingMessageId, newContent: inputMessage, toUserId: selectedUser.id });
+        setEditingMessageId(null);
+    } else {
+        socket.emit("private message", { content: inputMessage, toUserId: selectedUser.id });
+    }
+    
     setInputMessage("");
     setShowEmojiPicker(false);
     socket.emit('stop_typing', { toUserId: selectedUser.id });
+  };
+
+  const handleFileUpload = (e) => {
+      const file = e.target.files[0];
+      if (!file || !selectedUser) return;
+      
+      // Convert to Base64
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+          const type = file.type.startsWith('image/') ? 'image' : 'file';
+          socket.emit("private message", { 
+              content: type === 'image' ? 'Sent an image' : `Sent a file: ${file.name}`, 
+              toUserId: selectedUser.id,
+              type,
+              file: reader.result,
+              fileName: file.name
+          });
+      };
+  };
+
+  const deleteMessage = (msgId) => {
+      if (!selectedUser) return;
+      if (confirm("Delete this message?")) {
+          socket.emit('delete_message', { messageId: msgId, toUserId: selectedUser.id });
+      }
+  };
+
+  const startEditMessage = (msg) => {
+      setEditingMessageId(msg.id);
+      setInputMessage(msg.content);
+      // Focus input?
   };
 
   const onEmojiClick = (emojiObject) => {
@@ -384,7 +523,6 @@ function App() {
                         <div className="flex-1 min-w-0">
                             <div className="flex justify-between items-baseline">
                                 <div className="font-semibold text-slate-200 truncate">{chat.username}</div>
-                                {/* Optional: Timestamp of last message could go here */}
                             </div>
                             <div className="text-sm text-slate-500 truncate flex items-center gap-1">
                                 {typingUsers.has(chat.id) ? (
@@ -442,9 +580,32 @@ function App() {
                                 key={i} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
                                 className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
                             >
-                                <div className={`max-w-[85%] md:max-w-md p-3 px-4 rounded-2xl shadow-md backdrop-blur-sm ${isMe ? 'bg-blue-600 text-white rounded-br-none' : 'bg-slate-800 text-slate-200 rounded-bl-none border border-slate-700'}`}>
-                                    <div className="text-[15px] leading-relaxed break-words">{msg.content}</div>
+                                <div className={`group relative max-w-[85%] md:max-w-md p-3 px-4 rounded-2xl shadow-md backdrop-blur-sm ${isMe ? 'bg-blue-600 text-white rounded-br-none' : 'bg-slate-800 text-slate-200 rounded-bl-none border border-slate-700'}`}>
+                                    {/* Actions Menu (visible on hover) */}
+                                    {isMe && !msg.is_deleted && (
+                                        <div className="absolute -top-3 -right-2 hidden group-hover:flex bg-slate-900 border border-slate-700 rounded-lg shadow-lg overflow-hidden">
+                                            <button onClick={() => startEditMessage(msg)} className="p-1.5 hover:bg-slate-800 text-slate-400 hover:text-blue-400"><Edit2 size={12} /></button>
+                                            <button onClick={() => deleteMessage(msg.id)} className="p-1.5 hover:bg-slate-800 text-slate-400 hover:text-red-400"><Trash2 size={12} /></button>
+                                        </div>
+                                    )}
+
+                                    {/* Content */}
+                                    {msg.type === 'image' ? (
+                                        <img src={msg.file_url} alt="Shared" className="rounded-lg max-w-full cursor-pointer" onClick={() => window.open(msg.file_url, '_blank')} />
+                                    ) : msg.type === 'file' ? (
+                                        <a href={msg.file_url} download={msg.file_name} className="flex items-center gap-3 bg-black/20 p-2 rounded-lg hover:bg-black/30 transition">
+                                            <div className="bg-slate-700 p-2 rounded"><FileText size={20} /></div>
+                                            <div className="text-sm underline truncate max-w-[150px]">{msg.file_name}</div>
+                                            <Download size={16} />
+                                        </a>
+                                    ) : (
+                                        <div className={`text-[15px] leading-relaxed break-words ${msg.is_deleted ? 'italic opacity-50' : ''}`}>
+                                            {msg.content}
+                                        </div>
+                                    )}
+
                                     <div className={`text-[10px] text-right mt-1 opacity-60 flex justify-end items-center gap-1`}>
+                                        {msg.is_edited && !msg.is_deleted && <span className="mr-1">(edited)</span>}
                                         {msg.created_at ? new Date(msg.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''}
                                         {isMe && <CheckCheck size={12} />}
                                     </div>
@@ -468,18 +629,30 @@ function App() {
                                 </div>
                             )}
                         </div>
+
+                        <div className="relative">
+                            <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
+                            <button type="button" onClick={() => fileInputRef.current?.click()} className="p-3 text-slate-400 hover:text-blue-400 transition">
+                                <Paperclip size={24} />
+                            </button>
+                        </div>
                         
-                        <div className="flex-1 bg-slate-800 rounded-2xl border border-slate-700 focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500 transition flex items-center">
+                        <div className="flex-1 bg-slate-800 rounded-2xl border border-slate-700 focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500 transition flex items-center relative">
                             <input
                                 className="w-full bg-transparent p-3 text-white placeholder-slate-500 focus:outline-none max-h-32"
-                                placeholder="Message..."
+                                placeholder={editingMessageId ? "Editing message..." : "Message..."}
                                 value={inputMessage}
                                 onChange={handleInput}
                             />
+                            {editingMessageId && (
+                                <button type="button" onClick={() => { setEditingMessageId(null); setInputMessage(""); }} className="absolute right-2 top-2 p-1 bg-slate-700 rounded-full text-slate-400 hover:text-white">
+                                    <X size={14} />
+                                </button>
+                            )}
                         </div>
                         
                         <button type="submit" disabled={!inputMessage.trim()} className="p-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:hover:bg-blue-600 text-white rounded-full shadow-lg transition transform hover:scale-105">
-                            <Send size={20} />
+                            {editingMessageId ? <Check size={20} /> : <Send size={20} />}
                         </button>
                     </form>
                 </div>
