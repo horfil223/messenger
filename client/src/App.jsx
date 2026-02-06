@@ -120,8 +120,8 @@ function App() {
           reconnectionAttempts: 10,
           reconnectionDelay: 1000,
       });
-      setSocket(newSocket);
-
+      
+      // Define listeners immediately to avoid race conditions
       newSocket.on('connect', () => {
           console.log("Connected to server");
           setIsConnected(true);
@@ -146,6 +146,8 @@ function App() {
           console.error("Connection error:", err);
           setIsConnected(false);
       });
+
+      setSocket(newSocket);
 
       return () => newSocket.close();
   }, []);
@@ -288,6 +290,7 @@ function App() {
       setCallerSignal(data.signal);
     };
 
+    // Attach listeners
     socket.on('login_success', onLoginSuccess);
     socket.on('login_error', onLoginError);
     socket.on('register_success', onRegisterSuccess);
@@ -306,6 +309,21 @@ function App() {
     socket.on('typing', onTyping);
     socket.on('stop_typing', onStopTyping);
     socket.on('callUser', onCallUser);
+
+    // If we are already connected when this effect runs (e.g. strict mode or fast connection),
+    // we might have missed the initial 'connect' event handled in the other effect.
+    // BUT since we emit 'login' inside the 'connect' handler of the OTHER effect,
+    // and that handler runs AFTER the socket is created...
+    // The issue is: The 'login_success' listener HERE might not be attached when the server replies.
+    
+    // To fix this, we can try to re-emit login here if we are connected but not logged in.
+    if (socket.connected && !isLoggedIn && localStorage.getItem('messenger_user')) {
+         const savedUser = localStorage.getItem('messenger_user');
+         const savedPass = localStorage.getItem('messenger_pass');
+         if (savedUser && savedPass) {
+             socket.emit('login', { username: savedUser, password: savedPass });
+         }
+    }
 
     return () => {
         socket.off('login_success', onLoginSuccess);
