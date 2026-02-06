@@ -47,7 +47,9 @@ io.on('connection', (socket) => {
       await createUser(username, password);
       socket.emit('register_success');
     } catch (err) {
-      socket.emit('register_error', 'Username already exists');
+      console.error('Register error:', err);
+      // Send actual error message if possible, or generic if sensitive
+      socket.emit('register_error', err.message || 'Registration failed');
     }
   });
 
@@ -60,7 +62,7 @@ io.on('connection', (socket) => {
         connectedUsers[socket.id] = { socketId: socket.id, userId: user.id, username };
         userSockets[user.id] = socket.id;
 
-        // Pass avatar_url
+        // Pass avatar_url (safe even if undefined)
         socket.emit('login_success', { id: user.id, username, avatar_url: user.avatar_url });
         console.log(`User logged in: ${username} (ID: ${user.id})`);
         
@@ -79,8 +81,8 @@ io.on('connection', (socket) => {
         socket.emit('login_error', 'Invalid credentials');
       }
     } catch (err) {
-      console.error(err);
-      socket.emit('login_error', 'Server error');
+      console.error('Login error:', err);
+      socket.emit('login_error', 'Server error: ' + (err.message || 'Unknown'));
     }
   });
 

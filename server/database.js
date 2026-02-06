@@ -36,15 +36,15 @@ const initDB = async () => {
     `);
     
     // Migrations for new features
-    try { await pool.query(`ALTER TABLE messages ADD COLUMN is_deleted BOOLEAN DEFAULT FALSE`); } catch (e) {}
-    try { await pool.query(`ALTER TABLE messages ADD COLUMN is_edited BOOLEAN DEFAULT FALSE`); } catch (e) {}
-    try { await pool.query(`ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'`); } catch (e) {}
-    try { await pool.query(`ALTER TABLE messages ADD COLUMN file_url TEXT`); } catch (e) {}
-    try { await pool.query(`ALTER TABLE messages ADD COLUMN file_name TEXT`); } catch (e) {}
+    try { await pool.query(`ALTER TABLE messages ADD COLUMN is_deleted BOOLEAN DEFAULT FALSE`); } catch (e) { console.log('Migration note (is_deleted):', e.message); }
+    try { await pool.query(`ALTER TABLE messages ADD COLUMN is_edited BOOLEAN DEFAULT FALSE`); } catch (e) { console.log('Migration note (is_edited):', e.message); }
+    try { await pool.query(`ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'`); } catch (e) { console.log('Migration note (type):', e.message); }
+    try { await pool.query(`ALTER TABLE messages ADD COLUMN file_url TEXT`); } catch (e) { console.log('Migration note (file_url):', e.message); }
+    try { await pool.query(`ALTER TABLE messages ADD COLUMN file_name TEXT`); } catch (e) { console.log('Migration note (file_name):', e.message); }
     
     // New migrations for Read Receipts and Avatars
-    try { await pool.query(`ALTER TABLE messages ADD COLUMN is_read BOOLEAN DEFAULT FALSE`); } catch (e) {}
-    try { await pool.query(`ALTER TABLE users ADD COLUMN avatar_url TEXT`); } catch (e) {}
+    try { await pool.query(`ALTER TABLE messages ADD COLUMN is_read BOOLEAN DEFAULT FALSE`); } catch (e) { console.log('Migration note (is_read):', e.message); }
+    try { await pool.query(`ALTER TABLE users ADD COLUMN avatar_url TEXT`); } catch (e) { console.log('Migration note (avatar_url):', e.message); }
 
     console.log("Database tables initialized and migrated");
   } catch (err) {
@@ -59,8 +59,9 @@ function createUser(username, password) {
   return new Promise(async (resolve, reject) => {
     try {
       const hash = bcrypt.hashSync(password, 10);
+      // Removed RETURNING avatar_url to be safe if migration failed
       const res = await pool.query(
-        'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username, avatar_url',
+        'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username',
         [username, hash]
       );
       resolve(res.rows[0]);
