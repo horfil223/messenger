@@ -97,18 +97,20 @@ function App() {
     }
   }, [messages, selectedUser, typingUsers, isConnected]);
 
-  // Safety timeout for auto-login
+  // Safety timeout for auto-login - REMOVED to prevent premature logout
+  // We rely on the user clicking "Cancel" if they want to stop waiting.
+
+  // Retry login whenever connected
   useEffect(() => {
-      if (isAutoLoggingIn) {
-          const timer = setTimeout(() => {
-              if (!isLoggedIn) {
-                  setIsAutoLoggingIn(false);
-                  setAuthError("Session restore timed out. Please login manually.");
-              }
-          }, 5000);
-          return () => clearTimeout(timer);
+      if (socket && isConnected && !isLoggedIn && isAutoLoggingIn) {
+          const savedUser = localStorage.getItem('messenger_user');
+          const savedPass = localStorage.getItem('messenger_pass');
+          if (savedUser && savedPass) {
+              console.log("Attempting auto-login...");
+              socket.emit('login', { username: savedUser, password: savedPass });
+          }
       }
-  }, [isAutoLoggingIn, isLoggedIn]);
+  }, [socket, isConnected, isLoggedIn, isAutoLoggingIn]);
 
   // Init Socket
   useEffect(() => {
@@ -125,16 +127,6 @@ function App() {
       newSocket.on('connect', () => {
           console.log("Connected to server");
           setIsConnected(true);
-          // Auto-login on reconnect
-          const savedUser = localStorage.getItem('messenger_user');
-          const savedPass = localStorage.getItem('messenger_pass');
-          if (savedUser && savedPass) {
-              // Ensure we don't show login form momentarily
-              setIsAutoLoggingIn(true); 
-              newSocket.emit('login', { username: savedUser, password: savedPass });
-          } else {
-              setIsAutoLoggingIn(false);
-          }
       });
 
       newSocket.on('disconnect', () => {
@@ -317,13 +309,7 @@ function App() {
     // The issue is: The 'login_success' listener HERE might not be attached when the server replies.
     
     // To fix this, we can try to re-emit login here if we are connected but not logged in.
-    if (socket.connected && !isLoggedIn && localStorage.getItem('messenger_user')) {
-         const savedUser = localStorage.getItem('messenger_user');
-         const savedPass = localStorage.getItem('messenger_pass');
-         if (savedUser && savedPass) {
-             socket.emit('login', { username: savedUser, password: savedPass });
-         }
-    }
+    // REMOVED redundant logic here as it is handled by the new useEffect above.
 
     return () => {
         socket.off('login_success', onLoginSuccess);
