@@ -19,14 +19,18 @@ function App() {
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
   const [socket, setSocket] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  // Optimistic login: if we have credentials, assume logged in immediately
+  const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem('messenger_user'));
   const [isRegistering, setIsRegistering] = useState(false);
   const [username, setUsername] = useState(localStorage.getItem('messenger_user') || "");
   const [password, setPassword] = useState(localStorage.getItem('messenger_pass') || "");
   const [authError, setAuthError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [isAutoLoggingIn, setIsAutoLoggingIn] = useState(!!localStorage.getItem('messenger_user'));
-  const [me, setMe] = useState(null);
+  // Initial 'me' state from local storage if available (partial data)
+  const [me, setMe] = useState(() => {
+      const savedUser = localStorage.getItem('messenger_user');
+      return savedUser ? { username: savedUser } : null;
+  });
 
   const [chats, setChats] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
@@ -97,20 +101,20 @@ function App() {
     }
   }, [messages, selectedUser, typingUsers, isConnected]);
 
-  // Safety timeout for auto-login - REMOVED to prevent premature logout
-  // We rely on the user clicking "Cancel" if they want to stop waiting.
+  // Safety timeout for auto-login - REMOVED
+  // We use optimistic login now.
 
-  // Retry login whenever connected
+  // Retry login whenever connected to sync/validate session
   useEffect(() => {
-      if (socket && isConnected && !isLoggedIn && isAutoLoggingIn) {
+      if (socket && isConnected) {
           const savedUser = localStorage.getItem('messenger_user');
           const savedPass = localStorage.getItem('messenger_pass');
           if (savedUser && savedPass) {
-              console.log("Attempting auto-login...");
+              console.log("Syncing session...");
               socket.emit('login', { username: savedUser, password: savedPass });
           }
       }
-  }, [socket, isConnected, isLoggedIn, isAutoLoggingIn]);
+  }, [socket, isConnected]);
 
   // Init Socket
   useEffect(() => {
@@ -152,9 +156,8 @@ function App() {
     
     const onLoginSuccess = (userData) => {
       setIsLoading(false);
-      setIsAutoLoggingIn(false);
       setIsLoggedIn(true);
-      setMe(userData);
+      setMe(userData); // Update with full data from server (id, avatar)
       localStorage.setItem('messenger_user', userData.username);
       if (password) localStorage.setItem('messenger_pass', password);
       setAuthError("");
@@ -162,11 +165,22 @@ function App() {
 
     const onLoginError = (msg) => {
         setIsLoading(false);
-        setIsAutoLoggingIn(false);
-        setAuthError(msg);
+        // Only logout if explicit credentials error or if we were manually logging in
+        // If it's a "Server error" during auto-sync, maybe keep the user in "offline mode" UI?
+        // But for "Invalid credentials", definitely logout.
         if (msg === "Invalid credentials") {
+             setAuthError(msg);
+             setIsLoggedIn(false);
+             setMe(null);
              localStorage.removeItem('messenger_user');
              localStorage.removeItem('messenger_pass');
+        } else {
+             // For server errors, show error but don't kick out if we are optimistically logged in
+             if (!localStorage.getItem('messenger_user')) {
+                 setAuthError(msg);
+             } else {
+                 console.error("Background sync failed:", msg);
+             }
         }
     };
 
@@ -539,15 +553,7 @@ function App() {
                 </div>
                 <h2 className="text-3xl font-bold text-center text-white mb-2">Messenger</h2>
                 
-                {isAutoLoggingIn ? (
-                     <div className="flex flex-col items-center justify-center py-10">
-                        <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-                        <p className="text-slate-400">Restoring session...</p>
-                        <button onClick={() => setIsAutoLoggingIn(false)} className="mt-4 text-sm text-slate-500 hover:text-white underline">Cancel</button>
-                     </div>
-                ) : (
-                    <>
-                        <p className="text-slate-400 text-center mb-8">
+                <p className="text-slate-400 text-center mb-8">
                     {!isConnected ? (
                         <span className="flex items-center justify-center gap-2 text-yellow-400">
                             <WifiOff size={16} /> Connecting...
@@ -576,8 +582,6 @@ function App() {
                             {isRegistering ? "Already have an account? Sign In" : "Don't have an account? Sign Up"}
                         </button>
                     </div>
-                    </>
-                )}
                 {authError && <div className="mt-4 text-red-400 text-center text-sm bg-red-500/10 p-2 rounded-lg border border-red-500/20">{authError}</div>}
             </motion.div>
         </div>
