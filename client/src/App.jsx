@@ -5,7 +5,8 @@ import {
   Phone, Video, Send, Search, User, LogOut, 
   Menu, X, Smile, MoreVertical, Check, CheckCheck,
   Paperclip, Trash2, Edit2, FileText, Download,
-  Mic, MicOff, VideoOff, Camera, Moon, Sun, Image as ImageIcon
+  Mic, MicOff, VideoOff, Camera, Moon, Sun, Image as ImageIcon,
+  WifiOff, RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import EmojiPicker from 'emoji-picker-react';
@@ -17,11 +18,14 @@ function App() {
   // --- STATE ---
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
   const [socket, setSocket] = useState(null);
+  const [isConnected, setIsConnected] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isRegistering, setIsRegistering] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [isAutoLoggingIn, setIsAutoLoggingIn] = useState(!!localStorage.getItem('messenger_user'));
   const [me, setMe] = useState(null);
 
   const [chats, setChats] = useState([]);
@@ -87,16 +91,49 @@ function App() {
     // Mark as read if looking at the chat
     if (selectedUser && messages[selectedUser.id]) {
         const unread = messages[selectedUser.id].some(m => !m.is_read && m.from_user_id === selectedUser.id);
-        if (unread && socket) {
+        if (unread && socket && isConnected) {
              socket.emit('mark_read', { fromUserId: selectedUser.id });
         }
     }
-  }, [messages, selectedUser, typingUsers]);
+  }, [messages, selectedUser, typingUsers, isConnected]);
 
   // Init Socket
   useEffect(() => {
-      const newSocket = io();
+      // Reverting strict websocket force to see if it helps with "Server not found" on some networks
+      // but keeping it as a preference for better performance
+      const newSocket = io({
+          transports: ['websocket', 'polling'], 
+          reconnection: true,
+          reconnectionAttempts: 10,
+          reconnectionDelay: 1000,
+      });
       setSocket(newSocket);
+
+      newSocket.on('connect', () => {
+          console.log("Connected to server");
+          setIsConnected(true);
+          // Auto-login on reconnect
+          const savedUser = localStorage.getItem('messenger_user');
+          const savedPass = localStorage.getItem('messenger_pass');
+          if (savedUser && savedPass) {
+              // Ensure we don't show login form momentarily
+              setIsAutoLoggingIn(true); 
+              newSocket.emit('login', { username: savedUser, password: savedPass });
+          } else {
+              setIsAutoLoggingIn(false);
+          }
+      });
+
+      newSocket.on('disconnect', () => {
+          console.log("Disconnected from server");
+          setIsConnected(false);
+      });
+
+      newSocket.on('connect_error', (err) => {
+          console.error("Connection error:", err);
+          setIsConnected(false);
+      });
+
       return () => newSocket.close();
   }, []);
 
@@ -104,24 +141,21 @@ function App() {
   useEffect(() => {
     if (!socket) return;
 
-    // Auth helpers
-    const savedUser = localStorage.getItem('messenger_user');
-    const savedPass = localStorage.getItem('messenger_pass');
-    if (savedUser && savedPass) {
-      setUsername(savedUser);
-      setPassword(savedPass);
-      if (socket.connected) socket.emit('login', { username: savedUser, password: savedPass });
-      else socket.once('connect', () => socket.emit('login', { username: savedUser, password: savedPass }));
-    }
-
+    // --- EVENT HANDLERS ---
+    
     const onLoginSuccess = (userData) => {
+      setIsLoading(false);
+      setIsAutoLoggingIn(false);
       setIsLoggedIn(true);
       setMe(userData);
       localStorage.setItem('messenger_user', userData.username);
       if (password) localStorage.setItem('messenger_pass', password);
+      setAuthError("");
     };
 
     const onLoginError = (msg) => {
+        setIsLoading(false);
+        setIsAutoLoggingIn(false);
         setAuthError(msg);
         if (msg === "Invalid credentials") {
              localStorage.removeItem('messenger_user');
@@ -130,10 +164,17 @@ function App() {
     };
 
     const onRegisterSuccess = () => {
+        setIsLoading(false);
         alert("Registration successful! Login now.");
         setIsRegistering(false);
+        setAuthError("");
     };
     
+    const onRegisterError = (msg) => {
+        setIsLoading(false);
+        setAuthError(msg);
+    };
+
     const onRecentChats = (chatList) => setChats(chatList);
     const onSearchResults = (results) => setSearchResults(results);
     const onOnlineUsers = (ids) => setOnlineUsers(new Set(ids));
@@ -166,8 +207,7 @@ function App() {
       });
       
       setChats(prev => {
-        if (!prev.find(c => c.id === fromUserId)) return [{ id: fromUserId, username, avatar_url: msg.avatar_url }, ...prev]; // Assuming msg might carry avatar eventually, or we fetch it
-        // Actually, we might need to refresh chats to get avatar if it's a new user
+        if (!prev.find(c => c.id === fromUserId)) return [{ id: fromUserId, username, avatar_url: msg.avatar_url }, ...prev]; 
         const otherChats = prev.filter(c => c.id !== fromUserId);
         const currentChat = prev.find(c => c.id === fromUserId) || { id: fromUserId, username };
         return [currentChat, ...otherChats];
@@ -176,7 +216,6 @@ function App() {
       if (document.hidden || selectedUserRef.current?.id !== fromUserId) {
           notificationAudio.current.play().catch(e => console.log("Audio play failed", e)); 
       } else {
-          // If we are looking at this chat, mark as read immediately
           socket.emit('mark_read', { fromUserId });
       }
     };
@@ -239,6 +278,7 @@ function App() {
     socket.on('login_success', onLoginSuccess);
     socket.on('login_error', onLoginError);
     socket.on('register_success', onRegisterSuccess);
+    socket.on('register_error', onRegisterError);
     socket.on('recent_chats', onRecentChats);
     socket.on('search_results', onSearchResults);
     socket.on('online_users', onOnlineUsers);
@@ -255,32 +295,50 @@ function App() {
     socket.on('callUser', onCallUser);
 
     return () => {
-        socket.off('login_success');
-        socket.off('login_error');
-        socket.off('register_success');
-        socket.off('recent_chats');
-        socket.off('search_results');
-        socket.off('online_users');
-        socket.off('user_status');
-        socket.off('avatar_updated');
-        socket.off('history');
-        socket.off('private message');
-        socket.off('message_sent');
-        socket.off('messages_read');
-        socket.off('message_edited');
-        socket.off('message_deleted');
-        socket.off('typing');
-        socket.off('stop_typing');
-        socket.off('callUser');
+        socket.off('login_success', onLoginSuccess);
+        socket.off('login_error', onLoginError);
+        socket.off('register_success', onRegisterSuccess);
+        socket.off('register_error', onRegisterError);
+        socket.off('recent_chats', onRecentChats);
+        socket.off('search_results', onSearchResults);
+        socket.off('online_users', onOnlineUsers);
+        socket.off('user_status', onUserStatus);
+        socket.off('avatar_updated', onAvatarUpdated);
+        socket.off('history', onHistory);
+        socket.off('private message', onPrivateMessage);
+        socket.off('message_sent', onMessageSent);
+        socket.off('messages_read', onMessagesRead);
+        socket.off('message_edited', onMessageEdited);
+        socket.off('message_deleted', onMessageDeleted);
+        socket.off('typing', onTyping);
+        socket.off('stop_typing', onStopTyping);
+        socket.off('callUser', onCallUser);
     };
-  }, [socket]);
+  }, [socket]); // Only depend on socket!
 
 
   // --- HANDLERS ---
 
   const handleAuth = (e) => {
     e.preventDefault();
-    if (!socket) return;
+    if (!socket || !isConnected) {
+        setAuthError("Connecting to server...");
+        return;
+    }
+    setIsLoading(true);
+    setAuthError("");
+
+    // Timeout safety
+    setTimeout(() => {
+        setIsLoading(prev => {
+            if (prev) {
+                setAuthError("Request timed out. Check connection.");
+                return false;
+            }
+            return false;
+        });
+    }, 10000);
+
     if (isRegistering) socket.emit('register', { username, password });
     else socket.emit('login', { username, password });
   };
@@ -292,10 +350,7 @@ function App() {
     setSearchResults([]);
     setShowChatOnMobile(true);
     socket.emit('get_history', user.id);
-    
-    // Mark as read immediately when opening
     socket.emit('mark_read', { fromUserId: user.id });
-
     if (!chats.find(c => c.id === user.id)) setChats([user, ...chats]);
   };
 
@@ -466,27 +521,46 @@ function App() {
                     </div>
                 </div>
                 <h2 className="text-3xl font-bold text-center text-white mb-2">Messenger</h2>
-                <p className="text-slate-400 text-center mb-8">Sign in to continue</p>
+                
+                {isAutoLoggingIn ? (
+                     <div className="flex flex-col items-center justify-center py-10">
+                        <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+                        <p className="text-slate-400">Restoring session...</p>
+                        <button onClick={() => setIsAutoLoggingIn(false)} className="mt-4 text-sm text-slate-500 hover:text-white underline">Cancel</button>
+                     </div>
+                ) : (
+                    <>
+                        <p className="text-slate-400 text-center mb-8">
+                    {!isConnected ? (
+                        <span className="flex items-center justify-center gap-2 text-yellow-400">
+                            <WifiOff size={16} /> Connecting...
+                        </span>
+                    ) : (
+                        "Sign in to continue"
+                    )}
+                </p>
                 <form onSubmit={handleAuth} className="space-y-4">
                     <div className="relative">
                         <User className="absolute left-4 top-3.5 text-slate-400 w-5 h-5" />
                         <input className="w-full bg-slate-900/50 border border-slate-700 p-3 pl-12 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition" 
-                            placeholder="Username" value={username} onChange={e=>setUsername(e.target.value)} />
+                            placeholder="Username" value={username} onChange={e=>setUsername(e.target.value)} disabled={!isConnected} />
                     </div>
                     <div className="relative">
                         <div className="absolute left-4 top-3.5 text-slate-400 font-bold w-5 h-5 flex items-center justify-center">***</div>
                         <input className="w-full bg-slate-900/50 border border-slate-700 p-3 pl-12 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition" 
-                            type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} />
+                            type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} disabled={!isConnected} />
                     </div>
-                    <button className="w-full bg-gradient-to-r from-blue-600 to-purple-600 p-3.5 rounded-xl font-bold text-white shadow-lg hover:shadow-blue-500/30 transition transform hover:scale-[1.02] active:scale-95">
-                        {isRegistering ? "Create Account" : "Sign In"}
+                    <button disabled={!isConnected || isLoading} className="w-full bg-gradient-to-r from-blue-600 to-purple-600 p-3.5 rounded-xl font-bold text-white shadow-lg hover:shadow-blue-500/30 transition transform hover:scale-[1.02] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">
+                        {isLoading ? "Please wait..." : (isRegistering ? "Create Account" : "Sign In")}
                     </button>
                 </form>
                 <div className="mt-6 text-center">
-                    <button onClick={()=>setIsRegistering(!isRegistering)} className="text-sm text-slate-400 hover:text-white transition underline decoration-slate-600 underline-offset-4">
-                        {isRegistering ? "Already have an account? Sign In" : "Don't have an account? Sign Up"}
-                    </button>
-                </div>
+                        <button onClick={()=>setIsRegistering(!isRegistering)} className="text-sm text-slate-400 hover:text-white transition underline decoration-slate-600 underline-offset-4">
+                            {isRegistering ? "Already have an account? Sign In" : "Don't have an account? Sign Up"}
+                        </button>
+                    </div>
+                    </>
+                )}
                 {authError && <div className="mt-4 text-red-400 text-center text-sm bg-red-500/10 p-2 rounded-lg border border-red-500/20">{authError}</div>}
             </motion.div>
         </div>
@@ -514,7 +588,13 @@ function App() {
                     </div>
                     <div>
                         <h1 className="font-bold text-lg leading-tight">{me?.username}</h1>
-                        <div className="text-xs text-green-500 font-medium flex items-center gap-1">Online</div>
+                        <div className="flex items-center gap-2 text-xs font-medium">
+                            {isConnected ? (
+                                <span className="text-green-500">Online</span>
+                            ) : (
+                                <span className="text-yellow-500 flex items-center gap-1"><WifiOff size={12}/> Reconnecting...</span>
+                            )}
+                        </div>
                     </div>
                 </div>
                 <div className="flex gap-2">

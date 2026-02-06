@@ -61,7 +61,8 @@ io.on('connection', (socket) => {
     } catch (err) {
       console.error('Register error:', err);
       // Send actual error message if possible, or generic if sensitive
-      socket.emit('register_error', err.message || 'Registration failed');
+      const errorMessage = err.message || (typeof err === 'object' ? JSON.stringify(err) : String(err));
+      socket.emit('register_error', errorMessage || 'Registration failed');
     }
   });
 
@@ -94,7 +95,8 @@ io.on('connection', (socket) => {
       }
     } catch (err) {
       console.error('Login error:', err);
-      socket.emit('login_error', 'Server error: ' + (err.message || 'Unknown'));
+      const errorMessage = err.message || (typeof err === 'object' ? JSON.stringify(err) : String(err));
+      socket.emit('login_error', 'Server error: ' + errorMessage);
     }
   });
 
